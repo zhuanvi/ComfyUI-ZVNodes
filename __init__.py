@@ -11,7 +11,9 @@ node_list = [
     "video_nodes",
     "json_nodes",
     "list_nodes",
-    "layout_nodes"
+    "layout_nodes",
+    "filter_nodes",
+    "ps_nodes"
 ]
 
 NODE_CLASS_MAPPINGS = {}
