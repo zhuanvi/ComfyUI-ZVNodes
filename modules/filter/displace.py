@@ -1,61 +1,73 @@
-import torch
-import numpy as np
-from torchvision.transforms import functional as TF
 
-# comfyui_displace/displacement_node.py
 
 import torch
+from torch import nn
+import torch.nn.functional as F
 import numpy as np
 from torchvision import transforms
-from torch import nn
+
 
 class ProductionDisplacementMapNodeZV:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("IMAGE",),                    # (B, H, W, 3)
-                "displacement_map": ("IMAGE",),         # (B, H_d, W_d, C)
+                "image": ("IMAGE",),
+                "displacement_map": ("IMAGE",),
                 "horizontal_scale": ("FLOAT", {
-                    "default": 10.0,
-                    "min": 0.0,
-                    "max": 500.0,
-                    "step": 0.5
+                    "default": 10.0, "min": 0.0, "max": 500.0, "step": 0.5
                 }),
                 "vertical_scale": ("FLOAT", {
-                    "default": 10.0,
-                    "min": 0.0,
-                    "max": 500.0,
-                    "step": 0.5
+                    "default": 10.0, "min": 0.0, "max": 500.0, "step": 0.5
                 }),
                 "fit_method": (["stretch", "tile"], {"default": "stretch"}),
                 "undefined_area": (["replicate", "wrap"], {"default": "replicate"}),
                 "edge_smoothing": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 3.0,
-                    "step": 0.1,
-                    "tooltip": "Smooth displacement map to reduce tearing"
+                    "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.1
                 }),
                 "max_displacement_limit": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 1000.0,
-                    "step": 1.0,
-                    "tooltip": "Max displacement in pixels. 0 = no limit"
+                    "default": 0.0, "min": 0.0, "max": 1000.0, "step": 1.0
                 }),
             },
             "optional": {
-                "mask": ("MASK", {
-                    "tooltip": "Optional mask to limit displacement effect area"
-                })
+                "mask": ("MASK",)
             }
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply_displacement"
-    CATEGORY = "image/postprocessing"
-    DESCRIPTION = "High-quality displacement with edge padding to prevent tearing."
+    CATEGORY = "ZVNodes/filter"
+    DESCRIPTION = "High-quality displacement with correct output size."
+
+    def preprocess_mask(self, mask, batch_size, height, width):
+        device = mask.device
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0).unsqueeze(-1)  # (1, H, W, 1)
+        elif mask.dim() == 3:
+            if mask.shape[-1] == 4:
+                mask = mask[..., 3:4]  # 取 alpha
+            else:
+                mask = mask.unsqueeze(-1)  # (B, H, W, 1)
+        elif mask.dim() == 4:
+            if mask.shape[-1] == 4:
+                mask = mask[..., 3:4]  # RGBA -> A
+            elif mask.shape[-1] == 3:
+                # RGB 转灰度
+                weights = torch.tensor([0.299, 0.587, 0.114], device=device)
+                mask = torch.tensordot(mask, weights, dims=1).unsqueeze(-1)
+            else:
+                mask = mask  # 假设是 (B, H, W, 1)
+
+        # 调整大小（可选）
+        if mask.shape[1] != height or mask.shape[2] != width:
+            mask = F.interpolate(mask.permute(0,3,1,2), size=(height, width), mode='bilinear')
+            mask = mask.permute(0,2,3,1)
+
+        # 扩展 batch
+        if mask.shape[0] == 1 and batch_size > 1:
+            mask = mask.repeat(batch_size, 1, 1, 1)
+
+        return torch.clamp(mask, 0.0, 1.0)
 
     def apply_displacement(self, image, displacement_map, horizontal_scale, vertical_scale,
                          fit_method, undefined_area, edge_smoothing, max_displacement_limit,
@@ -64,19 +76,20 @@ class ProductionDisplacementMapNodeZV:
         device = image.device
         batch_size, height, width, channels = image.shape
 
-        # 处理 displacement_map batch
+        # 处理 displacement_map
         if displacement_map.shape[0] == 1:
             disp = displacement_map.repeat(batch_size, 1, 1, 1)
         else:
             disp = displacement_map
 
-        # 调整尺寸
-        disp = disp.permute(0, 3, 1, 2)  # -> (B, C, H_d, W_d)
+        disp = disp.permute(0, 3, 1, 2)  # (B, C, H_d, W_d)
 
         if fit_method == "stretch":
-            disp_resized = transforms.Resize((height, width), 
-                                           interpolation=transforms.InterpolationMode.BILINEAR,
-                                           antialias=True)(disp)
+            disp_resized = transforms.Resize(
+                (height, width),
+                interpolation=transforms.InterpolationMode.BILINEAR,
+                antialias=True
+            )(disp)
         else:  # tile
             tiles_x = (width // disp.shape[3]) + 2
             tiles_y = (height // disp.shape[2]) + 2
@@ -85,16 +98,16 @@ class ProductionDisplacementMapNodeZV:
 
         disp_resized = disp_resized.permute(0, 2, 3, 1)  # (B, H, W, C)
 
-        # 提取 R/G 通道
+        # 提取位移通道
         if disp_resized.shape[-1] >= 2:
-            disp_x = disp_resized[..., 0]  # Red
-            disp_y = disp_resized[..., 1]  # Green
+            disp_x = disp_resized[..., 0]
+            disp_y = disp_resized[..., 1]
         else:
             gray = disp_resized[..., 0]
             disp_x = gray
             disp_y = gray
 
-        # 归一化到 [-1, 1]（中性灰 = 0.5）
+        # 归一化到 [-1,1]
         disp_x = (disp_x - 0.5) * 2.0
         disp_y = (disp_y - 0.5) * 2.0
 
@@ -102,77 +115,78 @@ class ProductionDisplacementMapNodeZV:
         disp_x = disp_x * horizontal_scale
         disp_y = disp_y * vertical_scale
 
-        # 【优化1】限制最大位移
+        # 限制最大位移
         if max_displacement_limit > 0:
             disp_x = torch.clamp(disp_x, -max_displacement_limit, max_displacement_limit)
             disp_y = torch.clamp(disp_y, -max_displacement_limit, max_displacement_limit)
 
-        # 【优化2】平滑置换图（防撕裂）
+        # 平滑
         if edge_smoothing > 0:
-            kernel_size = int(2 * round(edge_smoothing) + 1)
-            kernel_size = max(3, kernel_size)  # 最小 3x3
-            blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=edge_smoothing)
+            k = int(2 * round(edge_smoothing) + 1)
+            k = max(3, min(31, k))  # 限制 kernel 大小
+            blur = transforms.GaussianBlur(kernel_size=k, sigma=edge_smoothing)
             disp_x = blur(disp_x.unsqueeze(1)).squeeze(1)
             disp_y = blur(disp_y.unsqueeze(1)).squeeze(1)
 
-        # 创建基础网格
-        grid_x, grid_y = torch.meshgrid(
-            torch.arange(width, device=device),
-            torch.arange(height, device=device),
-            indexing='xy'
-        )
-        grid_x = grid_x.float().unsqueeze(0).expand(batch_size, -1, -1)
-        grid_y = grid_y.float().unsqueeze(0).expand(batch_size, -1, -1)
+        # 创建网格（像素坐标）
+        grid_x = torch.linspace(0, width - 1, width, device=device)
+        grid_y = torch.linspace(0, height - 1, height, device=device)
+        grid_x, grid_y = torch.meshgrid(grid_x, grid_y, indexing='xy')  # (H, W)
+        grid_x = grid_x.unsqueeze(0).expand(batch_size, -1, -1)  # (B, H, W)
+        grid_y = grid_y.unsqueeze(0).expand(batch_size, -1, -1)
 
-        # 计算目标坐标
-        target_x = grid_x + disp_x
+        # 目标坐标
+        target_x = grid_x + disp_x  # (B, H, W)
         target_y = grid_y + disp_y
 
-        # 【核心优化】边缘扩展策略
-        pad = max(32, int(max(horizontal_scale, vertical_scale) * 1.2))  # 动态 padding
-        pad = min(pad, min(height, width) // 2)  # 不超过图像一半
+        # 扩展 padding
+        pad = max(32, int(max(horizontal_scale, vertical_scale) * 1.2))
+        pad = min(pad, min(height, width) // 2)
 
-        # 扩展图像
         img_tensor = image.permute(0, 3, 1, 2)  # (B, 3, H, W)
-        img_padded = nn.functional.pad(img_tensor, (pad, pad, pad, pad), mode='replicate')
+        img_padded = F.pad(img_tensor, (pad, pad, pad, pad), mode='replicate')  # (B, 3, H+2p, W+2p)
 
-        # 调整 flow 坐标到 padded 空间
-        flow_x_padded = 2 * (target_x + pad) / (width + 2*pad - 1) - 1
-        flow_y_padded = 2 * (target_y + pad) / (height + 2*pad - 1) - 1
-        flow_padded = torch.stack([flow_x_padded, flow_y_padded], dim=-1)  # (B, H, W, 2)
+        # ✅ 正确归一化到 [-1,1]（align_corners=False）
+        # padded 图像的新宽高
+        padded_w = width + 2 * pad
+        padded_h = height + 2 * pad
 
-        # 【处理 wrap 模式】
+        # 将目标坐标转换为 padded 图像上的 [-1,1] 坐标
+        norm_x = 2 * (target_x + pad) / (padded_w - 1) - 1  # 注意：使用 (size-1)
+        norm_y = 2 * (target_y + pad) / (padded_h - 1) - 1
+
+        # 处理 wrap 模式
         if undefined_area == "wrap":
-            # 使用模运算实现循环
-            x_unnorm = (flow_x_padded + 1) * 0.5 * (width + 2*pad)
-            y_unnorm = (flow_y_padded + 1) * 0.5 * (height + 2*pad)
+            # 转回像素坐标，取模，再归一化
+            px_x = (norm_x + 1) * 0.5 * padded_w
+            px_y = (norm_y + 1) * 0.5 * padded_h
+            px_x_wrap = torch.fmod(px_x, padded_w)
+            px_y_wrap = torch.fmod(px_y, padded_h)
+            norm_x = 2 * px_x_wrap / padded_w - 1
+            norm_y = 2 * px_y_wrap / padded_h - 1
 
-            x_wrap = (x_unnorm % (width + 2*pad)) / (width + 2*pad) * 2 - 1
-            y_wrap = (y_unnorm % (height + 2*pad)) / (height + 2*pad) * 2 - 1
-
-            flow_padded = torch.stack([x_wrap, y_wrap], dim=-1)
+        flow = torch.stack([norm_x, norm_y], dim=-1)  # (B, H, W, 2)
 
         # 采样
-        result_padded = nn.functional.grid_sample(
-            img_padded, flow_padded,
+        result_padded = F.grid_sample(
+            img_padded, flow,
             mode='bilinear',
             padding_mode='zeros',
-            align_corners=False
-        )  # (B, 3, H+2pad, W+2pad)
+            align_corners=False  # ✅ 保持一致
+        )  # (B, 3, H, W) —— 输出尺寸自动为 (B,3,H,W)
 
-        # 裁剪回原始尺寸
-        result = result_padded[:, :, pad:pad+height, pad:pad+width]
-
-        # 【可选】应用 mask
-        if mask is not None and mask.shape[0] == batch_size:
-            mask_exp = mask.unsqueeze(1)  # (B, 1, H, W)
-            orig = img_tensor
-            result = mask_exp * result + (1 - mask_exp) * orig
+        # ✅ 不需要 crop！因为 flow 指向 padded 区域，但输出仍是 (H, W)
+        result = result_padded  # 尺寸已是 (B, 3, H, W)
 
         # 转回 (B, H, W, 3)
         result = result.permute(0, 2, 3, 1)
         result = torch.clamp(result, 0.0, 1.0)
         result = torch.nan_to_num(result, 0.0)
+
+        # 可选 mask
+        if mask is not None:
+            mask = self.preprocess_mask(mask, batch_size, height, width)
+            result = mask * result + (1 - mask) * image
 
         return (result,)
 
