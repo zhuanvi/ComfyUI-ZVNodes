@@ -13,7 +13,8 @@ node_list = [
     "list_nodes",
     "layout_nodes",
     "filter_nodes",
-    "ps_nodes"
+    "ps_nodes",
+    "api_nodes"
 ]
 
 NODE_CLASS_MAPPINGS = {}
