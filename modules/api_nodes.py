@@ -153,7 +153,7 @@ class doubaoT2INodeZV:
 
 NODE_CONFIG = {
     "doubaoT2INodeZV": {"class": doubaoT2INodeZV, "name": "doubao T2I API Node"},
-    "doubaoI2INodeZV": {"class": doubaoT2INodeZV, "name": "doubao I2I API Node"},
+    "doubaoI2INodeZV": {"class": doubaoI2INodeZV, "name": "doubao I2I API Node"},
 }
 
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = generate_node_mappings(NODE_CONFIG)
