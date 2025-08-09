@@ -310,7 +310,7 @@ class LoadImageFromUrlZV:
             }
         }
 
-    RETURN_TYPES = ("IMAGE","STRING")
+    RETURN_TYPES = ("IMAGE","STRING","STRING","STRING")
     RETURN_NAMES = ("image", "image_url", "filename", "image_prefix")
     FUNCTION = "load"
     CATEGORY = "ZVNodes/image"
