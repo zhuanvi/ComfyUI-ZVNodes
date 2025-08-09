@@ -304,9 +304,9 @@ class LoadImageFromUrlZV:
                 "url": (
                     "STRING",
                     {
-                        "default": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Example.jpg/800px-Example.jpg"
+                        "default": "https://ark-project.tos-cn-beijing.volces.com/doc_image/seededit_i2i.jpeg"
                     },
-                ),
+                )
             }
         }
 

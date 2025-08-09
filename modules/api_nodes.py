@@ -17,7 +17,7 @@ class doubaoI2INodeZV:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "url": ("STRING", {"default": "https://ark.cn-beijing.volces.com/api/v3"}),
+                "api_url": ("STRING", {"default": "https://ark.cn-beijing.volces.com/api/v3"}),
                 "model": ("STRING", {"default": "doubao-seededit-3-0-i2i-250628"}),
                 "api_key": ("STRING",), 
                 "image_url": ("STRING", {"default": "https://ark-project.tos-cn-beijing.volces.com/doc_image/seededit_i2i.jpeg"}),
@@ -32,9 +32,9 @@ class doubaoI2INodeZV:
     FUNCTION = "doubao"
     CATEGORY = "ZVNodes/api"
 
-    def doubao(self, url, model, api_key, image_url, prompt, seed, guidance_scale):
+    def doubao(self, api_url, model, api_key, image_url, prompt, seed, guidance_scale):
         api_key = api_key
-        base_url = url
+        base_url = api_url
         client = Ark(
             base_url=base_url,
             api_key=api_key,
@@ -74,7 +74,7 @@ class doubaoT2INodeZV:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "url": ("STRING", {"default": "https://ark.cn-beijing.volces.com/api/v3"}),
+                "api_url": ("STRING", {"default": "https://ark.cn-beijing.volces.com/api/v3"}),
                 "model": ("STRING", {"default": "doubao-seedream-3-0-t2i-250415"}),
                 "api_key": ("STRING",), 
                 "prompt": ("STRING", {"default": "1girl"}), 
@@ -89,9 +89,9 @@ class doubaoT2INodeZV:
     FUNCTION = "doubao"
     CATEGORY = "ZVNodes/api"
 
-    def doubao(self, url, model, api_key, prompt, aspect_ratio, seed, guidance_scale):
+    def doubao(self, api_url, model, api_key, prompt, aspect_ratio, seed, guidance_scale):
         api_key = api_key
-        base_url = url
+        base_url = api_url
         client = Ark(
             base_url=base_url,
             api_key=api_key,
