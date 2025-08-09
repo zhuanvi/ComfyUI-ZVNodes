@@ -6,7 +6,9 @@ import torch
 import torchvision.transforms.functional as F
 import numpy as np
 import json
-from .utils import generate_node_mappings, calculate_file_hash
+import requests
+import urllib.parse
+from .utils import generate_node_mappings, pil2tensor
 from pillow_heif import register_heif_opener
 register_heif_opener()
 
@@ -291,9 +293,40 @@ class SaveImageToPathZV:
                 image_path_list.append(str(subpath))
 
         return (image_path_list,)
+
+class LoadImageFromUrlZV:
+    """Load an image from the given URL"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "url": (
+                    "STRING",
+                    {
+                        "default": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Example.jpg/800px-Example.jpg"
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE","STRING")
+    RETURN_NAMES = ("image", "image_url", "filename", "image_prefix")
+    FUNCTION = "load"
+    CATEGORY = "ZVNodes/image"
+
+    def load(self, url):
+        # get the image from the url
+        image = Image.open(requests.get(url, stream=True).raw)
+        image = ImageOps.exif_transpose(image)
+        parsed = urllib.parse.urlparse(url)
+        filename = os.path.basename(parsed.path)
+        image_prefix = os.path.splitext(filename)[0]
+        return (pil2tensor(image), url, filename, image_prefix)
     
 
 NODE_CONFIG = {
+    "LoadImageFromUrlZV":{"class": LoadImageFromUrlZV, "name": "Load Image (Url)"},
     "LoadImageFromDirZV": {"class": LoadImageFromDirZV, "name": "Load One Image (Directory)"},
     "SaveImageToPathZV": {"class": SaveImageToPathZV, "name": "Save Image (Directory)"},
     "ImageCounterNodeZV":{"class": ImageCounterNodeZV, "name": "Count Image (Directory)"},
