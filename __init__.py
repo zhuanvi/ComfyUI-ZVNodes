@@ -8,6 +8,7 @@ logging.info(f"### Loading: ComfyUI-ZVNodes ({version_str})")
 node_list = [
     "image_nodes",
     "txt_nodes",
+    "string_nodes",
     "video_nodes",
     "json_nodes",
     "list_nodes",
