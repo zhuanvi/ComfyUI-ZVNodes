@@ -5,6 +5,12 @@ import numpy as np
 import numpy.typing as npt
 from collections.abc import Callable, Sequence
 from PIL import Image
+import chardet
+
+def detect_encoding(file_path):
+    with open(file_path, 'rb') as f:
+        result = chardet.detect(f.read())
+    return result['encoding']
 
 def generate_node_mappings(node_config):
     node_class_mappings = {}

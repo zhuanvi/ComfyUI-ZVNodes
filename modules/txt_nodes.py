@@ -10,7 +10,7 @@ from datetime import datetime
 import uuid
 import folder_paths
 import comfy.utils
-from .utils import generate_node_mappings
+from .utils import detect_encoding, generate_node_mappings
 
 class TxtCounterNodeZV:
     
@@ -102,8 +102,8 @@ class LoadTxtFromDirZV:
         else:
             raise FileNotFoundError(f"No Enough files in directory '{folder}'.")
     
-
-        with open(txt_path, "r", encoding="utf-8") as f:
+        encoding = detect_encoding(txt_path)
+        with open(txt_path, "r", encoding=encoding) as f:
             txt = f.read()
 
                
