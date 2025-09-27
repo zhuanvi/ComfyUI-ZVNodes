@@ -185,6 +185,7 @@ class SaveTxtToPathZV:
 
 
 NODE_CONFIG = {
+    "TxtCounterNodeZV":{"class": TxtCounterNodeZV, "name": "Count TXT (Directory)"},
     "LoadTxtFromDirZV": {"class": LoadTxtFromDirZV, "name": "Load One TXT (Directory)"},
     "SaveTxtToPathZV": {"class": SaveTxtToPathZV, "name": "Save TXT (Directory)"}
 }
