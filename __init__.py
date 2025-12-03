@@ -15,7 +15,7 @@ node_list = [
     "layout_nodes",
     "filter_nodes",
     "ps_nodes",
-    "api_nodes"
+    "api_nodes",
 ]
 
 NODE_CLASS_MAPPINGS = {}
