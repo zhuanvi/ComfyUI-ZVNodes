@@ -172,7 +172,7 @@ class UniversalBBOXToMaskZV:
             formatted_string = '{"boxes": []}'
             return (empty_mask, empty_vis, info, [], [], formatted_string)
     
-    def parse_bbox_string(self, bbox_string):
+    def parse_bbox_string(self, bbox_string, debug_mode="no"):
         """解析bbox字符串，提取boxes，忽略labels"""
         try:
             # 清理字符串
