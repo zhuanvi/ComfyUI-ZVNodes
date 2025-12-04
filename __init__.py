@@ -16,6 +16,7 @@ node_list = [
     "filter_nodes",
     "ps_nodes",
     "api_nodes",
+    "apimart_nodes",
 ]
 
 NODE_CLASS_MAPPINGS = {}
