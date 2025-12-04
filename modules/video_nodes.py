@@ -18,6 +18,67 @@ from scenedetect.frame_timecode import FrameTimecode
 
 from .utils import generate_node_mappings, calculate_file_hash
 
+class LoadVideoFromDirZV:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "folder": ("STRING", {"default": ""})
+            },
+            "optional": {
+                "start_index": ("INT", {"default": 0, "min": 0, "step": 1}),
+                "include_subfolders": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("video_path", "video_name")
+    FUNCTION = "get_video_info"
+    CATEGORY = "ZVNodes/video"
+    DESCRIPTION = """Get video file path and name from a folder by index."""
+
+    def get_video_info(self, folder, start_index=0, include_subfolders=False):
+        # 检查文件夹是否存在
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"Folder '{folder}' cannot be found.")
+        
+        # 支持的视频格式
+        valid_extensions = [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".mpg", ".mpeg", ".m4v"]
+        video_paths = []
+        
+        # 收集视频文件
+        if include_subfolders:
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in valid_extensions):
+                        video_paths.append(os.path.join(root, file))
+        else:
+            for file in os.listdir(folder):
+                if any(file.lower().endswith(ext) for ext in valid_extensions) and os.path.isfile(os.path.join(folder, file)):
+                    video_paths.append(os.path.join(folder, file))
+
+        # 排序
+        sorted_videos = sorted(video_paths)
+
+        # 检查是否有视频文件
+        if len(sorted_videos) == 0:
+            raise FileNotFoundError(f"No video files found in directory '{folder}'.")
+        
+        # 检查索引是否有效
+        if start_index >= len(sorted_videos):
+            raise ValueError(f"Video index {start_index} out of range. Only {len(sorted_videos)} videos found.")
+        
+        # 获取视频路径和名称
+        video_path = sorted_videos[start_index]
+        video_name = os.path.basename(video_path)
+        
+        return (video_path, video_name)
+
+    @classmethod
+    def IS_CHANGED(cls, folder, start_index=0, include_subfolders=False):
+        # 当文件夹内容发生变化时，节点会重新执行
+        return os.path.getmtime(folder) if os.path.exists(folder) else None
+
 class VideoSpeedZV:
     @classmethod
     def INPUT_TYPES(s):
@@ -327,6 +388,7 @@ class VideoSceneDetectorZV:
 NODE_CONFIG = {
     "VideoSpeedZV": {"class": VideoSpeedZV, "name": "Video Speed"},
     "VideoSceneDetectorZV": {"class": VideoSceneDetectorZV, "name": "Video Scene Detector"},
+    "LoadVideoFromDirZV":{"class": LoadVideoFromDirZV, "name": "Load One Video (Directory)"},
 }
 
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = generate_node_mappings(NODE_CONFIG)
