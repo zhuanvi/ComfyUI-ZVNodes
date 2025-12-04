@@ -8,28 +8,13 @@ import base64
 import io
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
-try:
-    import numpy as np
-except Exception:
-    np = None
-try:
-    import torch
-except Exception:
-    torch = None
+import numpy as np
+import torch
+from comfy.comfy_types import IO
+from comfy_api.input import VideoInput
+import folder_paths
+from PIL import Image
 
-try:
-    from comfy.comfy_types import IO
-    import folder_paths
-    from PIL import Image
-except Exception:
-    class IO:
-        VIDEO = "VIDEO"
-        IMAGE = "IMAGE"
-    class folder_paths:
-        @staticmethod
-        def get_output_directory():
-            return os.path.join(os.getcwd(), "output")
-    Image = None
 
 # 分类名称
 CATEGORY = "ZVNodes/apimart"
@@ -759,8 +744,8 @@ class ApimartTaskPollingZV:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", IO.VIDEO, "STRING")
-    RETURN_NAMES = ("image", "video", "report")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("image", "video_path", "report")
     CATEGORY = CATEGORY
     FUNCTION = "poll"
     
@@ -845,9 +830,9 @@ class ApimartTaskPollingZV:
                     if not ok:
                         return (None, None, f"视频下载失败: {msg}")
                     
-                    video_adapter = VideoAdapterZV(output_path)
+                    # video_adapter = VideoAdapterZV(output_path)
                     _update_task_status(task_id, "completed", result_url)
-                    return (None, video_adapter, f"视频下载成功: {filename} | URL: {result_url}")
+                    return (None, output_path, f"视频下载成功: {filename} | URL: {result_url}")
                 
                 else:
                     return (None, None, f"无法确定文件类型: {file_ext}")
