@@ -1059,6 +1059,7 @@ class ApimartImage2VideoSubmitZV:
         """提交图生视频任务"""
         # 1) 优先：上传到Apimart CDN
         cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+        print(f"已经上传图片到{cdn_url}!")
         if cdn_url:
             payload = {
                 "model": model,
@@ -1262,6 +1263,7 @@ class Veo31Image2VideoSubmitZV:
 
 class ApimartDownloadSavedTaskVideoZV:
     """下载已保存任务视频类"""
+    
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1270,6 +1272,8 @@ class ApimartDownloadSavedTaskVideoZV:
             },
             "optional": {
                 "task_id": ("STRING", {"default": ""}),
+                "max_retries": ("INT", {"default": 12, "min": 1, "max": 60}),
+                "retry_interval": ("INT", {"default": 5, "min": 1, "max": 30}),
             }
         }
 
@@ -1282,7 +1286,7 @@ class ApimartDownloadSavedTaskVideoZV:
     def IS_CHANGED(cls, **kwargs):
         return time.time_ns()
 
-    def run(self, api_key: str, task_id: str = ""):
+    def run(self, api_key: str, task_id: str = "", max_retries: int = 12, retry_interval: int = 5):
         """下载已保存任务的视频"""
         manual_id = (task_id or "").strip()
         if manual_id:
@@ -1293,28 +1297,60 @@ class ApimartDownloadSavedTaskVideoZV:
                 return (VideoAdapterZV(None), "没有已保存的任务ID")
             selected_task_id = tasks[0].get("task_id")
 
-        code, body = _query_task(selected_task_id, api_key)
+        # 添加轮询机制处理401错误
+        retry_count = 0
+        code = 0
+        body = None
+        
+        while retry_count < max_retries:
+            # 查询任务状态
+            code, body = _query_task(selected_task_id, api_key)
+            if code == 200:
+                # 成功获取响应，跳出轮询
+                # 提取状态信息
+                status = None
+                if isinstance(body, dict):
+                    status = body.get("status") or body.get("state")
+                    data = body.get("data")
+                    if isinstance(data, list) and data:
+                        status = status or data[0].get("status") or data[0].get("state")
+                    elif isinstance(data, dict):
+                        status = status or data.get("status") or data.get("state")
+                vurl = _extract_video_url(body)
+                if not vurl:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"HTTP 401 - 查询失败，等待 {retry_interval} 秒后重试 ({retry_count}/{max_retries})")
+                        time.sleep(retry_interval)
+                    else:
+                        # 达到最大重试次数
+                        return (VideoAdapterZV(None), f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
+                else:
+                    break
+            elif code == 401:
+                # HTTP 401错误，等待后继续轮询
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"HTTP 401 - 查询失败，等待 {retry_interval} 秒后重试 ({retry_count}/{max_retries})")
+                    time.sleep(retry_interval)
+                else:
+                    # 达到最大重试次数
+                    return (VideoAdapterZV(None), 
+                           f"HTTP 401 - 查询失败，已达到最大重试次数 ({max_retries}) | task_id: {selected_task_id}")
+            else:
+                # 其他错误，直接返回
+                return (VideoAdapterZV(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
 
-        status = None
-        if isinstance(body, dict):
-            status = body.get("status") or body.get("state")
-            data = body.get("data")
-            if isinstance(data, list) and data:
-                status = status or data[0].get("status") or data[0].get("state")
-            elif isinstance(data, dict):
-                status = status or data.get("status") or data.get("state")
-
+        # 检查是否成功获取数据
         if code != 200:
             return (VideoAdapterZV(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
-
-        vurl = _extract_video_url(body)
-        if not vurl:
-            return (VideoAdapterZV(None), f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
 
         # 下载到输出目录
         base = folder_paths.get_output_directory()
         out_name = f"apimart_{selected_task_id}.mp4"
         out_path = os.path.join(base, out_name)
+        
+        # 使用原有的下载重试机制
         ok, msg = _download_with_retries(vurl, out_path, API_CONFIG.get("max_retries", 3))
         
         if not ok:
@@ -1322,10 +1358,16 @@ class ApimartDownloadSavedTaskVideoZV:
 
         # 下载成功，移除任务
         adapter = VideoAdapterZV(out_path)
-        report = f"下载成功 | {out_name} | task_id={selected_task_id}"
+        
+        # 生成报告
+        report_parts = []
+        if retry_count > 0:
+            report_parts.append(f"重试 {retry_count} 次后成功")
+        report_parts.append(f"下载成功 | {out_name} | task_id={selected_task_id}")
+        report = " | ".join(report_parts)
+        
         _remove_task_by_id(selected_task_id)
         return (adapter, report)
-
 
 class ApimartRemixVideoSubmitZV:
     """视频Remix提交任务类"""
@@ -1752,6 +1794,8 @@ class ApimartDownloadSavedTaskImageZV:
             },
             "optional": {
                 "task_id": ("STRING", {"default": ""}),
+                "max_retries": ("INT", {"default": 12, "min": 1, "max": 60}),
+                "retry_interval": ("INT", {"default": 5, "min": 1, "max": 30}),
             }
         }
 
@@ -1764,7 +1808,7 @@ class ApimartDownloadSavedTaskImageZV:
     def IS_CHANGED(cls, **kwargs):
         return time.time_ns()
 
-    def run(self, api_key: str, task_id: str = ""):
+    def run(self, api_key: str, task_id: str = "", max_retries: int = 12, retry_interval: int = 5):
         manual_id = (task_id or "").strip()
         if manual_id:
             selected_task_id = manual_id
@@ -1780,9 +1824,63 @@ class ApimartDownloadSavedTaskImageZV:
                 return (empty_batch, "没有已保存的任务ID")
             selected_task_id = tasks[0].get("task_id")
 
-        # 查询任务状态
-        code, body = _query_task(selected_task_id, api_key)
+        # 添加轮询机制处理401错误
+        retry_count = 0
+        while retry_count < max_retries:
+            # 查询任务状态
+            code, body = _query_task(selected_task_id, api_key)
 
+            if code == 200:
+                # 成功获取响应，跳出轮询
+                image_urls = _extract_image_urls(body)
+                if not image_urls:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"HTTP 401 - 查询失败，等待 {retry_interval} 秒后重试 ({retry_count}/{max_retries})")
+                        time.sleep(retry_interval)
+                    else:
+                        # 检查任务状态
+                        status = None
+                        if isinstance(body, dict):
+                            status = body.get("status") or body.get("state")
+                            data = body.get("data")
+                            if isinstance(data, list) and data:
+                                status = status or data[0].get("status") or data[0].get("state")
+                            elif isinstance(data, dict):
+                                status = status or data.get("status") or data.get("state")
+                        
+                        try:
+                            import torch
+                            empty_batch = torch.zeros((0, 3, 512, 512))
+                        except Exception:
+                            empty_batch = None
+                        return (empty_batch, f"任务未完成或无图像链接 | status={status} | task_id={selected_task_id}")
+                else:
+                    break
+            elif code == 401:
+                # HTTP 401错误，等待后继续轮询
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"HTTP 401 - 查询失败，等待 {retry_interval} 秒后重试 ({retry_count}/{max_retries})")
+                    time.sleep(retry_interval)
+                else:
+                    # 达到最大重试次数
+                    try:
+                        import torch
+                        empty_batch = torch.zeros((0, 3, 512, 512))
+                    except Exception:
+                        empty_batch = None
+                    return (empty_batch, f"HTTP 401 - 查询失败，已达到最大重试次数 ({max_retries}) | task_id: {selected_task_id}")
+            else:
+                # 其他错误，直接返回
+                try:
+                    import torch
+                    empty_batch = torch.zeros((0, 3, 512, 512))
+                except Exception:
+                    empty_batch = None
+                return (empty_batch, f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
+
+        # 检查是否成功获取数据
         if code != 200:
             try:
                 import torch
@@ -1790,27 +1888,7 @@ class ApimartDownloadSavedTaskImageZV:
             except Exception:
                 empty_batch = None
             return (empty_batch, f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
-
-        # 提取图像URL列表
-        image_urls = _extract_image_urls(body)
-        
-        if not image_urls:
-            # 检查任务状态
-            status = None
-            if isinstance(body, dict):
-                status = body.get("status") or body.get("state")
-                data = body.get("data")
-                if isinstance(data, list) and data:
-                    status = status or data[0].get("status") or data[0].get("state")
-                elif isinstance(data, dict):
-                    status = status or data.get("status") or data.get("state")
-            
-            try:
-                import torch
-                empty_batch = torch.zeros((0, 3, 512, 512))
-            except Exception:
-                empty_batch = None
-            return (empty_batch, f"任务未完成或无图像链接 | status={status} | task_id={selected_task_id}")
+                    
 
         # 下载所有图像并加载为tensor
         downloaded_images = []
@@ -1862,6 +1940,8 @@ class ApimartDownloadSavedTaskImageZV:
         
         # 生成报告
         report_parts = []
+        if retry_count > 0:
+            report_parts.append(f"重试 {retry_count} 次后成功")
         report_parts.append(f"下载完成 | task_id={selected_task_id}")
         report_parts.append(f"成功: {success_count}/{len(image_urls)}")
         
