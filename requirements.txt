@@ -1,3 +1,5 @@
 pillow_heif
 scenedetect
+imageio
+imageio-ffmpeg
 volcengine-python-sdk[ark]
