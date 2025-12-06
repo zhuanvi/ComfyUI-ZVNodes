@@ -8,7 +8,7 @@ import base64
 import io
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
-from .utils import pil2tensor
+from .utils import pil2tensor,VideoAdapter, batch_upload_image_to_apimart_cdn, upload_video_to_apimart_cdn, image_to_temp_png, image_to_temp_file, tensor2pil
 
 try:
     import numpy as np
@@ -272,442 +272,6 @@ def _extract_image_urls(obj: Any) -> List[str]:
     # 去重
     return list(dict.fromkeys(urls))  # 保持顺序
 
-# ==================== 图像处理函数 ====================
-
-def _tensor_to_pil(img_any: Any):
-    """将张量转换为PIL图像"""
-    try:
-        from PIL import Image
-    except Exception:
-        return None
-    
-    try:
-        if torch is not None and isinstance(img_any, torch.Tensor):
-            t = img_any
-            if t.dim() == 4:
-                t = t[0]
-            t = t.detach().cpu().clamp(0, 1)
-            arr = (t.numpy() * 255).astype("uint8")
-            if arr.shape[-1] == 3:
-                return Image.fromarray(arr, "RGB")
-            if arr.shape[-1] == 4:
-                return Image.fromarray(arr, "RGBA")
-        if np is not None and isinstance(img_any, np.ndarray):
-            arr = img_any
-            if arr.dtype != np.uint8:
-                arr = np.clip(arr, 0, 1)
-                arr = (arr * 255).astype(np.uint8)
-            if arr.shape[-1] == 3:
-                return Image.fromarray(arr, "RGB")
-            if arr.shape[-1] == 4:
-                return Image.fromarray(arr, "RGBA")
-    except Exception:
-        return None
-    return None
-
-
-def _image_to_data_url(image: Any) -> Optional[str]:
-    """将图像转换为Data URL"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-
-        if pil_img is None:
-            return None
-
-        buf = io.BytesIO()
-        pil_img.save(buf, format="PNG")
-        buf.seek(0)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{b64}"
-    except Exception:
-        return None
-
-
-def _image_to_temp_png(image: Any, max_side: int = 1024) -> Optional[str]:
-    """将图像转换为临时PNG文件"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-            
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-            
-        if pil_img is None:
-            return None
-            
-        try:
-            if hasattr(pil_img, "mode") and pil_img.mode not in ("RGB", "RGBA") and Image is not None:
-                pil_img = pil_img.convert("RGB")
-        except Exception:
-            pass
-            
-        try:
-            if Image is not None:
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    pil_img = pil_img.copy()
-                    pil_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
-            
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        pil_img.save(tmp, "PNG")
-        tmp.flush()
-        tmp.close()
-        return tmp.name
-    except Exception:
-        return None
-
-def _image_to_temp_file(image: Any, max_side: int = 1024, format: str = "PNG") -> Optional[str]:
-    """将图像转换为临时文件，支持指定格式"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-        if pil_img is None:
-            return None
-        try:
-            if hasattr(pil_img, "mode") and pil_img.mode not in ("RGB", "RGBA") and Image is not None:
-                pil_img = pil_img.convert("RGB")
-        except Exception:
-            pass
-        try:
-            if Image is not None:
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    pil_img = pil_img.copy()
-                    pil_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
-        
-        if format.upper() == "PNG":
-            suffix = ".png"
-            save_format = "PNG"
-        elif format.upper() == "JPG" or format.upper() == "JPEG":
-            suffix = ".jpg"
-            save_format = "JPEG"
-        else:
-            suffix = ".png"
-            save_format = "PNG"
-            
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-        pil_img.save(tmp, save_format)
-        tmp.flush()
-        tmp.close()
-        return tmp.name
-    except Exception:
-        return None
-
-# ==================== 上传函数 ====================
-
-def _upload_image_and_get_url(image: Any, max_side: int = 1024) -> Optional[str]:
-    """上传图像到外部图床并获取URL"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-
-        if pil_img is None:
-            return None
-
-        try:
-            if pil_img.mode not in ("RGB", "RGBA") and Image is not None:
-                pil_img = pil_img.convert("RGB")
-        except Exception:
-            pass
-
-        try:
-            if Image is not None:
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    pil_img = pil_img.copy()
-                    pil_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
-
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        try:
-            pil_img.save(tmp, "PNG")
-            tmp.flush()
-            tmp.close()
-
-            # 自定义上传端点
-            custom_url = os.getenv("APIMART_UPLOAD_URL", "").strip()
-            if custom_url:
-                field = os.getenv("APIMART_UPLOAD_FIELD", "file").strip() or "file"
-                auth = os.getenv("APIMART_UPLOAD_AUTH", "").strip()
-                headers = {}
-                if auth:
-                    headers["Authorization"] = auth
-                with open(tmp.name, "rb") as f:
-                    resp_c = requests.post(custom_url, headers=headers, files={field: f}, timeout=60)
-                url_c = None
-                try:
-                    body_c = resp_c.json()
-                    for k in ("url", "download_url", "link", "fileUrl"):
-                        v = body_c.get(k)
-                        if isinstance(v, str) and v.startswith("http"):
-                            url_c = v
-                            break
-                    if not url_c:
-                        data_c = body_c.get("data")
-                        if isinstance(data_c, dict):
-                            for k in ("url", "download_url", "link"):
-                                v = data_c.get(k)
-                                if isinstance(v, str) and v.startswith("http"):
-                                    url_c = v
-                                    break
-                except Exception:
-                    url_c = (resp_c.text or "").strip()
-                if url_c and url_c.startswith("http") and resp_c.status_code in (200, 201):
-                    return url_c
-
-            # 0x0.st
-            try:
-                with open(tmp.name, "rb") as f:
-                    resp = requests.post("https://0x0.st", files={"file": f}, timeout=60)
-                url = (resp.text or "").strip()
-                if resp.status_code == 200 and url.startswith("http"):
-                    return url
-            except Exception:
-                pass
-
-            # transfer.sh
-            try:
-                with open(tmp.name, "rb") as f:
-                    fname = os.path.basename(tmp.name) or "image.png"
-                    resp2 = requests.put(f"https://transfer.sh/{fname}", data=f.read(), timeout=60)
-                url2 = (resp2.text or "").strip()
-                if resp2.status_code in (200, 201) and url2.startswith("http"):
-                    return url2
-            except Exception:
-                pass
-
-            # catbox.moe
-            try:
-                with open(tmp.name, "rb") as f:
-                    resp3 = requests.post(
-                        "https://catbox.moe/user/api.php",
-                        data={"reqtype": "fileupload"},
-                        files={"fileToUpload": f},
-                        timeout=60,
-                    )
-                url3 = (resp3.text or "").strip()
-                if resp3.status_code == 200 and url3.startswith("http"):
-                    return url3
-            except Exception:
-                pass
-
-            return None
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-    except Exception:
-        return None
-
-
-def _upload_image_to_apimart_cdn(image: Any, api_key: Optional[str], max_side: int = 1024) -> Optional[str]:
-    """上传图像到Apimart CDN"""
-    temp_png = _image_to_temp_png(image, max_side=max_side)
-    if not temp_png:
-        return None
-        
-    try:
-        headers = _headers(api_key)
-        token_res = requests.post(
-            "https://grsai.dakka.com.cn/client/resource/newUploadTokenZH",
-            headers=headers,
-            json={"sux": "png"},
-            timeout=30,
-        )
-        if token_res.status_code != 200:
-            return None
-            
-        try:
-            token_data = token_res.json().get("data") or {}
-        except Exception:
-            return None
-            
-        token = token_data.get("token")
-        key = token_data.get("key")
-        up_url = token_data.get("url")
-        domain = token_data.get("domain")
-        if not (token and key and up_url and domain):
-            return None
-
-        with open(temp_png, "rb") as f:
-            up_resp = requests.post(up_url, data={"token": token, "key": key}, files={"file": f}, timeout=120)
-        if up_resp.status_code not in (200, 201):
-            return None
-
-        public_url = f"{domain}/{key}"
-        return public_url if public_url.startswith("http") else None
-    except Exception:
-        return None
-    finally:
-        try:
-            if temp_png and os.path.exists(temp_png):
-                os.unlink(temp_png)
-        except Exception:
-            pass
-
-
-def _video_to_temp_file(video: Any) -> Optional[str]:
-    """将视频转换为临时文件"""
-    try:
-        if isinstance(video, str) and os.path.exists(video):
-            ext = os.path.splitext(video)[1].lower() or ".mp4"
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.close()
-            shutil.copyfile(video, tmp.name)
-            return tmp.name
-
-        path = getattr(video, "path", None)
-        if isinstance(path, str) and os.path.exists(path):
-            ext = os.path.splitext(path)[1].lower() or ".mp4"
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.close()
-            shutil.copyfile(path, tmp.name)
-            return tmp.name
-
-        if hasattr(video, "save_to"):
-            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            tmp.close()
-            ok = False
-            try:
-                ok = video.save_to(tmp.name)
-            except Exception:
-                ok = False
-            if ok and os.path.exists(tmp.name):
-                return tmp.name
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-    except Exception:
-        return None
-    return None
-
-
-def _upload_video_to_apimart_cdn(video: Any, api_key: Optional[str]) -> Optional[str]:
-    """上传视频到Apimart CDN"""
-    temp_video = _video_to_temp_file(video)
-    if not temp_video:
-        return None
-        
-    try:
-        headers = _headers(api_key)
-        ext = (os.path.splitext(temp_video)[1].lower().lstrip(".")) or "mp4"
-        token_res = requests.post(
-            "https://grsai.dakka.com.cn/client/resource/newUploadTokenZH",
-            headers=headers,
-            json={"sux": ext},
-            timeout=30,
-        )
-        if token_res.status_code != 200:
-            return None
-            
-        try:
-            token_data = token_res.json().get("data") or {}
-        except Exception:
-            return None
-            
-        token = token_data.get("token")
-        key = token_data.get("key")
-        up_url = token_data.get("url")
-        domain = token_data.get("domain")
-        if not (token and key and up_url and domain):
-            return None
-            
-        with open(temp_video, "rb") as f:
-            up_resp = requests.post(up_url, data={"token": token, "key": key}, files={"file": f}, timeout=300)
-        if up_resp.status_code not in (200, 201):
-            return None
-            
-        public_url = f"{domain}/{key}"
-        return public_url if public_url.startswith("http") else None
-    except Exception:
-        return None
-    finally:
-        try:
-            if temp_video and os.path.exists(temp_video):
-                os.unlink(temp_video)
-        except Exception:
-            pass
-
 
 # ==================== API调用函数 ====================
 
@@ -916,67 +480,6 @@ def _load_image_to_tensor(image_path: str):
         return None
 
 
-# ==================== 重命名后的类 ====================
-
-class VideoAdapterZV:
-    """视频适配器类"""
-    def __init__(self, path: Optional[str]):
-        self.path = path
-        self.width, self.height, self.fps = self._get_video_details(path)
-
-    def _get_video_details(self, path: Optional[str]):
-        """获取视频详细信息"""
-        try:
-            if not path or not os.path.exists(path):
-                return 1280, 720, 30
-            try:
-                import cv2
-            except Exception:
-                return 1280, 720, 30
-                
-            cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
-                return 1280, 720, 30
-                
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            cap.release()
-            
-            if not fps or fps == 0:
-                fps = 30
-            return width or 1280, height or 720, int(fps)
-        except Exception:
-            return 1280, 720, 30
-
-    def __repr__(self):
-        return f"<VideoAdapterZV path={self.path} {self.width}x{self.height}@{self.fps}>"
-
-    def get_dimensions(self):
-        """获取视频尺寸"""
-        return self.width, self.height
-
-    def save_to(self, output_path, **kwargs):
-        """保存视频到指定路径"""
-        try:
-            if self.path and os.path.exists(self.path):
-                shutil.copyfile(self.path, output_path)
-                return True
-            return False
-        except Exception:
-            return False
-
-    def get_components(self):
-        """获取视频组件信息"""
-        return {
-            "path": self.path,
-            "width": self.width,
-            "height": self.height,
-            "fps": self.fps,
-            "bit_rate": 0,
-        }
-
-
 class ApimartText2VideoSubmitZV:
     """文生视频提交任务类"""
     @classmethod
@@ -1058,15 +561,14 @@ class ApimartImage2VideoSubmitZV:
     def submit(self, image, prompt: str, api_key: str, aspect_ratio: str, duration: str, model: str):
         """提交图生视频任务"""
         # 1) 优先：上传到Apimart CDN
-        cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
-        print(f"已经上传图片到{cdn_url}!")
+        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
         if cdn_url:
             payload = {
                 "model": model,
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
                 "duration": int(duration),
-                "image_urls": [cdn_url],
+                "image_urls": cdn_url,
             }
             code, body = _submit_generation(payload, api_key)
 
@@ -1101,7 +603,7 @@ class ApimartImage2VideoSubmitZV:
             return (report, task_id or "")
 
         # 2) 兜底：使用本地文件上传
-        temp_png = _image_to_temp_png(image, max_side=1024)
+        temp_png = image_to_temp_png(image, max_side=1024)
         if not temp_png:
             return ("图片外链上传失败且本地PNG生成失败。请检查网络或更换图源。", "")
 
@@ -1176,14 +678,14 @@ class Veo31Image2VideoSubmitZV:
         duration = 8
 
         # 优先使用CDN外链
-        cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
         if cdn_url:
             payload = {
                 "model": model,
                 "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": aspect_ratio,
-                "image_urls": [cdn_url],
+                "image_urls": cdn_url,
             }
             code, body = _submit_generation(payload, api_key)
 
@@ -1224,7 +726,7 @@ class Veo31Image2VideoSubmitZV:
             return (report, task_id or "")
 
         # 兜底：使用multipart上传
-        temp_png = _image_to_temp_png(image, max_side=1024)
+        temp_png = image_to_temp_png(image, max_side=1024)
         if not temp_png:
             return ("图片外链上传失败且本地PNG生成失败。请检查网络或更换图源。", "")
 
@@ -1294,7 +796,7 @@ class ApimartDownloadSavedTaskVideoZV:
         else:
             tasks = _read_task_queue()
             if not tasks:
-                return (VideoAdapterZV(None), "没有已保存的任务ID")
+                return (VideoAdapter(None), "没有已保存的任务ID")
             selected_task_id = tasks[0].get("task_id")
 
         # 添加轮询机制处理401错误
@@ -1324,7 +826,7 @@ class ApimartDownloadSavedTaskVideoZV:
                         time.sleep(retry_interval)
                     else:
                         # 达到最大重试次数
-                        return (VideoAdapterZV(None), f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
+                        return (VideoAdapter(None), f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
                 else:
                     break
             elif code == 401:
@@ -1335,15 +837,15 @@ class ApimartDownloadSavedTaskVideoZV:
                     time.sleep(retry_interval)
                 else:
                     # 达到最大重试次数
-                    return (VideoAdapterZV(None), 
+                    return (VideoAdapter(None), 
                            f"HTTP 401 - 查询失败，已达到最大重试次数 ({max_retries}) | task_id: {selected_task_id}")
             else:
                 # 其他错误，直接返回
-                return (VideoAdapterZV(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
+                return (VideoAdapter(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
 
         # 检查是否成功获取数据
         if code != 200:
-            return (VideoAdapterZV(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
+            return (VideoAdapter(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
 
         # 下载到输出目录
         base = folder_paths.get_output_directory()
@@ -1354,10 +856,10 @@ class ApimartDownloadSavedTaskVideoZV:
         ok, msg = _download_with_retries(vurl, out_path, API_CONFIG.get("max_retries", 3))
         
         if not ok:
-            return (VideoAdapterZV(None), f"下载失败: {msg} | task_id={selected_task_id}")
+            return (VideoAdapter(None), f"下载失败: {msg} | task_id={selected_task_id}")
 
         # 下载成功，移除任务
-        adapter = VideoAdapterZV(out_path)
+        adapter = VideoAdapter(out_path)
         
         # 生成报告
         report_parts = []
@@ -1414,7 +916,7 @@ class ApimartRemixVideoSubmitZV:
             return (task_id or "")
 
         # 兜底：上传视频到CDN
-        cdn_url = _upload_video_to_apimart_cdn(video, api_key)
+        cdn_url = upload_video_to_apimart_cdn(video, api_key)
         if not cdn_url:
             return ("")
 
@@ -1537,9 +1039,9 @@ class ApimartSeedream40ImageSubmitZV:
         image_urls = []
         if image is not None:
             # 上传图像到CDN获取URL
-            cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+            cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
             if cdn_url:
-                image_urls.append(cdn_url)
+                image_urls = cdn_url
         
         if image_urls:
             payload["image_urls"] = image_urls
@@ -1628,9 +1130,9 @@ class ApimartSeedream45ImageSubmitZV:
         image_urls = []
         if image is not None:
             # 上传图像到CDN获取URL
-            cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+            cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
             if cdn_url:
-                image_urls.append(cdn_url)
+                image_urls = cdn_url
         
         if image_urls:
             payload["image_urls"] = image_urls
@@ -1712,9 +1214,9 @@ class ApimartNanoBananaProImageSubmitZV:
         image_urls = []
         if image is not None:
             # 上传图像到CDN获取URL
-            cdn_url = _upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+            cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
             if cdn_url:
-                image_urls.append(cdn_url)
+                image_urls = cdn_url
         
         if image_urls:
             payload["image_urls"] = image_urls
@@ -1722,7 +1224,7 @@ class ApimartNanoBananaProImageSubmitZV:
         # 处理蒙版图像
         if mask is not None:
             # 蒙版图像必须是PNG格式
-            mask_temp_file = _image_to_temp_file(mask, max_side=1024, format="PNG")
+            mask_temp_file = image_to_temp_file(mask, max_side=1024, format="PNG")
             if mask_temp_file:
                 try:
                     # 上传蒙版图像到CDN

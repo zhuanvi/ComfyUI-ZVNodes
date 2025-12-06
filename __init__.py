@@ -17,6 +17,7 @@ node_list = [
     "ps_nodes",
     "api_nodes",
     "apimart_nodes",
+    "grsai_nodes",
 ]
 
 NODE_CLASS_MAPPINGS = {}
