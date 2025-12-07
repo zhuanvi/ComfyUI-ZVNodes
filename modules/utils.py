@@ -92,36 +92,36 @@ def _headers(api_key: Optional[str]) -> Dict[str, str]:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
     }
 
-# def _tensor_to_pil(img_any: Any):
-#     """将张量转换为PIL图像"""
-#     try:
-#         from PIL import Image
-#     except Exception:
-#         return None
+def _tensor_to_pil(img_any: Any):
+    """将张量转换为PIL图像"""
+    try:
+        from PIL import Image
+    except Exception:
+        return None
     
-#     try:
-#         if torch is not None and isinstance(img_any, torch.Tensor):
-#             t = img_any
-#             if t.dim() == 4:
-#                 t = t[0]
-#             t = t.detach().cpu().clamp(0, 1)
-#             arr = (t.numpy() * 255).astype("uint8")
-#             if arr.shape[-1] == 3:
-#                 return Image.fromarray(arr, "RGB")
-#             if arr.shape[-1] == 4:
-#                 return Image.fromarray(arr, "RGBA")
-#         if np is not None and isinstance(img_any, np.ndarray):
-#             arr = img_any
-#             if arr.dtype != np.uint8:
-#                 arr = np.clip(arr, 0, 1)
-#                 arr = (arr * 255).astype(np.uint8)
-#             if arr.shape[-1] == 3:
-#                 return Image.fromarray(arr, "RGB")
-#             if arr.shape[-1] == 4:
-#                 return Image.fromarray(arr, "RGBA")
-#     except Exception:
-#         return None
-#     return None
+    try:
+        if torch is not None and isinstance(img_any, torch.Tensor):
+            t = img_any
+            if t.dim() == 4:
+                t = t[0]
+            t = t.detach().cpu().clamp(0, 1)
+            arr = (t.numpy() * 255).astype("uint8")
+            if arr.shape[-1] == 3:
+                return Image.fromarray(arr, "RGB")
+            if arr.shape[-1] == 4:
+                return Image.fromarray(arr, "RGBA")
+        if np is not None and isinstance(img_any, np.ndarray):
+            arr = img_any
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0, 1)
+                arr = (arr * 255).astype(np.uint8)
+            if arr.shape[-1] == 3:
+                return Image.fromarray(arr, "RGB")
+            if arr.shape[-1] == 4:
+                return Image.fromarray(arr, "RGBA")
+    except Exception:
+        return None
+    return None
 
 def image_to_temp_png(image: Any, max_side: int = 1024) -> Optional[str]:
     """将图像转换为临时PNG文件"""
@@ -142,11 +142,11 @@ def image_to_temp_png(image: Any, max_side: int = 1024) -> Optional[str]:
                 elif hasattr(candidate, "to_pil"):
                     pil_img = candidate.to_pil()
                 else:
-                    pil_img = tensor2pil(candidate)
+                    pil_img = _tensor_to_pil(candidate)
         elif hasattr(image, "to_pil"):
             pil_img = image.to_pil()
         else:
-            pil_img = tensor2pil(image)
+            pil_img = _tensor_to_pil(image)
             
         if pil_img is None:
             return None
@@ -179,6 +179,8 @@ def _upload_image_to_apimart_cdn(image: Any, api_key: Optional[str], max_side: i
     temp_png = image_to_temp_png(image, max_side=max_side)
     if not temp_png:
         return None
+    elif isinstance(temp_png, list):
+        temp_png = temp_png[0]
         
     try:
         headers = _headers(api_key)
@@ -238,11 +240,11 @@ def image_to_temp_file(image: Any, max_side: int = 1024, format: str = "PNG") ->
                 elif hasattr(candidate, "to_pil"):
                     pil_img = candidate.to_pil()
                 else:
-                    pil_img = tensor2pil(candidate)
+                    pil_img = _tensor_to_pil(candidate)
         elif hasattr(image, "to_pil"):
             pil_img = image.to_pil()
         else:
-            pil_img = tensor2pil(image)
+            pil_img = _tensor_to_pil(image)
         if pil_img is None:
             return None
         try:
@@ -415,7 +417,7 @@ class VideoAdapter:
             return 1280, 720, 30
 
     def __repr__(self):
-        return f"<VideoAdapterZV path={self.path} {self.width}x{self.height}@{self.fps}>"
+        return f"<VideoAdapter path={self.path} {self.width}x{self.height}@{self.fps}>"
 
     def get_dimensions(self):
         """获取视频尺寸"""

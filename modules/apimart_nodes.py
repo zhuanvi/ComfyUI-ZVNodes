@@ -8,7 +8,7 @@ import base64
 import io
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
-from .utils import pil2tensor,VideoAdapter, batch_upload_image_to_apimart_cdn, upload_video_to_apimart_cdn, image_to_temp_png, image_to_temp_file, tensor2pil
+from .utils import pil2tensor,VideoAdapter, batch_upload_image_to_apimart_cdn, upload_video_to_apimart_cdn, image_to_temp_png, image_to_temp_file
 
 try:
     import numpy as np
@@ -561,7 +561,8 @@ class ApimartImage2VideoSubmitZV:
     def submit(self, image, prompt: str, api_key: str, aspect_ratio: str, duration: str, model: str):
         """提交图生视频任务"""
         # 1) 优先：上传到Apimart CDN
-        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
+        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=1024)
+        print(f"{cdn_url}")
         if cdn_url:
             payload = {
                 "model": model,
@@ -678,7 +679,7 @@ class Veo31Image2VideoSubmitZV:
         duration = 8
 
         # 优先使用CDN外链
-        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=2048)
+        cdn_url = batch_upload_image_to_apimart_cdn(image, api_key, max_side=1024)
         if cdn_url:
             payload = {
                 "model": model,
@@ -779,8 +780,8 @@ class ApimartDownloadSavedTaskVideoZV:
             }
         }
 
-    RETURN_TYPES = (IO.VIDEO, "STRING")
-    RETURN_NAMES = ("video", "report")
+    RETURN_TYPES = (IO.VIDEO, "STRING", "STRING")
+    RETURN_NAMES = ("video", "video_path", "report")
     CATEGORY = CATEGORY
     FUNCTION = "run"
     
@@ -796,7 +797,7 @@ class ApimartDownloadSavedTaskVideoZV:
         else:
             tasks = _read_task_queue()
             if not tasks:
-                return (VideoAdapter(None), "没有已保存的任务ID")
+                return (VideoAdapter(None), "", "没有已保存的任务ID")
             selected_task_id = tasks[0].get("task_id")
 
         # 添加轮询机制处理401错误
@@ -826,7 +827,7 @@ class ApimartDownloadSavedTaskVideoZV:
                         time.sleep(retry_interval)
                     else:
                         # 达到最大重试次数
-                        return (VideoAdapter(None), f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
+                        return (VideoAdapter(None), "", f"任务未完成或无视频链接 | status={status} | task_id={selected_task_id}")
                 else:
                     break
             elif code == 401:
@@ -837,15 +838,15 @@ class ApimartDownloadSavedTaskVideoZV:
                     time.sleep(retry_interval)
                 else:
                     # 达到最大重试次数
-                    return (VideoAdapter(None), 
+                    return (VideoAdapter(None), "",
                            f"HTTP 401 - 查询失败，已达到最大重试次数 ({max_retries}) | task_id: {selected_task_id}")
             else:
                 # 其他错误，直接返回
-                return (VideoAdapter(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
+                return (VideoAdapter(None), "", f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
 
         # 检查是否成功获取数据
         if code != 200:
-            return (VideoAdapter(None), f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
+            return (VideoAdapter(None), "", f"HTTP {code} - 查询失败 | task_id: {selected_task_id}")
 
         # 下载到输出目录
         base = folder_paths.get_output_directory()
@@ -856,7 +857,7 @@ class ApimartDownloadSavedTaskVideoZV:
         ok, msg = _download_with_retries(vurl, out_path, API_CONFIG.get("max_retries", 3))
         
         if not ok:
-            return (VideoAdapter(None), f"下载失败: {msg} | task_id={selected_task_id}")
+            return (VideoAdapter(None), "", f"下载失败: {msg} | task_id={selected_task_id}")
 
         # 下载成功，移除任务
         adapter = VideoAdapter(out_path)
@@ -869,7 +870,7 @@ class ApimartDownloadSavedTaskVideoZV:
         report = " | ".join(report_parts)
         
         _remove_task_by_id(selected_task_id)
-        return (adapter, report)
+        return (adapter, out_path, report)
 
 class ApimartRemixVideoSubmitZV:
     """视频Remix提交任务类"""
@@ -1477,14 +1478,14 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ApimartText2VideoSubmitZV": "文生视频提交任务 ZV",
-    "ApimartImage2VideoSubmitZV": "图生视频提交任务 ZV",
-    "ApimartDownloadSavedTaskVideoZV": "下载已保存任务视频 ZV",
-    "ApimartRemixVideoSubmitZV": "视频 Remix 提交任务 ZV",
-    "ApimartRemixByTaskIdSubmitZV": "通过 TaskID 视频 Remix 提交 ZV",
-    "Veo31Image2VideoSubmitZV": "veo3.1 图生视频提交任务 ZV",
-    "ApimartSeedream40ImageSubmitZV": "Seedream 4.0 图像生成 ZV",
-    "ApimartSeedream45ImageSubmitZV": "Seedream 4.5 图像生成 ZV",
-    "ApimartNanoBananaProImageSubmitZV": "NanoBananaPro 图像生成 ZV",
-    "ApimartDownloadSavedTaskImageZV": "下载已保存任务图像 ZV",
+    "ApimartText2VideoSubmitZV": "文生视频提交任务(apimart)",
+    "ApimartImage2VideoSubmitZV": "图生视频提交任务(apimart)",
+    "ApimartDownloadSavedTaskVideoZV": "下载已保存任务视频(apimart)",
+    "ApimartRemixVideoSubmitZV": "视频 Remix 提交任务(apimart)",
+    "ApimartRemixByTaskIdSubmitZV": "通过 TaskID 视频 Remix 提交(apimart)",
+    "Veo31Image2VideoSubmitZV": "veo3.1 图生视频提交任务(apimart)",
+    "ApimartSeedream40ImageSubmitZV": "Seedream 4.0 图像生成(apimart)",
+    "ApimartSeedream45ImageSubmitZV": "Seedream 4.5 图像生成(apimart)",
+    "ApimartNanoBananaProImageSubmitZV": "NanoBananaPro 图像生成(apimart)",
+    "ApimartDownloadSavedTaskImageZV": "下载已保存任务图像(apimart)",
 }
