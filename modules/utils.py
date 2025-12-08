@@ -10,7 +10,8 @@ import chardet
 import requests
 import tempfile
 import shutil
-
+import folder_paths
+import io
 
 def detect_encoding(file_path):
     with open(file_path, 'rb') as f:
@@ -442,3 +443,116 @@ class VideoAdapter:
             "fps": self.fps,
             "bit_rate": 0,
         }
+
+class MediaProcessor:
+    """媒体处理器"""
+    
+    @staticmethod
+    def download_image(url: str, timeout: int = 30) -> Optional[torch.Tensor]:
+        """下载图像并转换为tensor"""
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+            response = requests.get(url, headers=headers, stream=True, timeout=timeout)
+            response.raise_for_status()
+            
+            # 读取图像数据
+            image_data = io.BytesIO(response.content)
+            image = Image.open(image_data)
+            
+            # 转换为RGB
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # 转换为numpy数组
+            image_np = np.array(image).astype(np.float32) / 255.0
+            
+            # 转换为torch张量
+            image_tensor = torch.from_numpy(image_np)[None,]
+            
+            return image_tensor
+            
+        except Exception as e:
+            print(f"下载图像错误: {str(e)}")
+            return None
+    
+    @staticmethod
+    def download_video(url: str, task_id: str, timeout: int = 300) -> Tuple[Optional[str], Optional[str]]:
+        """下载视频到本地"""
+        try:
+            output_dir = folder_paths.get_output_directory()
+            video_filename = f"grsai_video_{task_id}.mp4"
+            video_path = os.path.join(output_dir, video_filename)
+            
+            print(f"下载视频: {url}")
+            
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+            response = requests.get(url, headers=headers, stream=True, timeout=timeout)
+            response.raise_for_status()
+            
+            # 保存视频
+            with open(video_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"视频下载成功: {video_path}")
+            return video_path, None
+            
+        except Exception as e:
+            error_msg = f"下载视频错误: {str(e)}"
+            print(error_msg)
+            return None, error_msg
+    
+    @staticmethod
+    def detect_media_type(result_data: Dict[str, Any], media_type: str, auto_detect: bool) -> str:
+        """检测媒体类型"""
+        if not auto_detect and media_type != "auto":
+            return media_type
+        
+        # 自动检测逻辑
+        # 如果有pid字段，通常是视频（Sora）
+        if 'pid' in result_data and result_data['pid']:
+            return "video"
+        
+        # 如果有content字段，通常是图像（Nano Banana）
+        if 'content' in result_data and result_data['content']:
+            return "image"
+        
+        # 根据URL扩展名判断
+        url = result_data.get('url', '')
+        if url:
+            url_lower = url.lower()
+            if any(ext in url_lower for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']):
+                return "video"
+            elif any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
+                return "image"
+        
+        # 默认返回图像类型
+        return "image"
+    
+    @staticmethod
+    def load_image_from_path(image_path: str) -> Optional[torch.Tensor]:
+        """从路径加载图像"""
+        if not image_path or not os.path.exists(image_path):
+            print(f"图像路径不存在: {image_path}")
+            return None
+        
+        try:
+            image = Image.open(image_path)
+            
+            # 转换为RGB
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # 转换为numpy数组
+            image_np = np.array(image).astype(np.float32) / 255.0
+            
+            # 转换为torch张量
+            image_tensor = torch.from_numpy(image_np)[None,]
+            
+            print(f"图像加载成功: {image_path}")
+            return image_tensor
+            
+        except Exception as e:
+            print(f"加载图像错误: {str(e)}")
+            return None
