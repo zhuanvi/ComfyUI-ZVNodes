@@ -1037,14 +1037,15 @@ class LoadImageFromDirZV:
     RETURN_NAMES = ("image", "mask", "directory", "name", "prefix")
     FUNCTION = "load_images"
     CATEGORY = "ZVNodes/image"
-    DESCRIPTION = """Loads images from a folder into a batch, images are resized and loaded into a batch."""
+    DESCRIPTION = """Loads images from a folder into a batch. Supports multi-frame images (GIF, TIFF, etc.) as ImageSequences."""
 
-    def load_images(self, folder, start_index, include_subfolders=False):
+    def load_images(self, folder, start_index=0, include_subfolders=False):
         if not os.path.isdir(folder):
-            raise FileNotFoundError(f"Folder '{folder} cannot be found.'")
+            raise FileNotFoundError(f"Folder '{folder}' cannot be found.")
         
-        valid_extensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".heic", ".pjp", ".pjpeg", ".jfif"]
+        valid_extensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".heic", ".pjp", ".pjpeg", ".jfif"]
         image_paths = []
+        
         if include_subfolders:
             for root, _, files in os.walk(folder):
                 for file in files:
@@ -1054,42 +1055,81 @@ class LoadImageFromDirZV:
             for file in os.listdir(folder):
                 if any(file.lower().endswith(ext) for ext in valid_extensions) and os.path.isfile(os.path.join(folder, file)):
                     image_paths.append(os.path.join(folder, file))
-
+        
         dir_files = sorted(image_paths)
-
+        
         if len(dir_files) == 0:
             raise FileNotFoundError(f"No files in directory '{folder}'.")
-
-        # start at start_index
+        
         if len(dir_files) > start_index:
             image_path = dir_files[start_index]
         else:
-            raise FileNotFoundError(f"No Enough files in directory '{folder}'.")
-
-        i = Image.open(image_path)
-        width, height = i.size
-        i = ImageOps.exif_transpose(i)
+            raise FileNotFoundError(f"No enough files in directory '{folder}'.")
         
-        image = i.convert("RGB")
-        image = np.array(image).astype(np.float32) / 255.0
-        image = torch.from_numpy(image)[None,]
+        # 打开图像文件
+        img = Image.open(image_path)
         
-        if 'A' in i.getbands():
-            mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
-            mask = 1. - torch.from_numpy(mask)
-            if mask.shape != (height, width):
-                mask = torch.nn.functional.interpolate(mask.unsqueeze(0).unsqueeze(0), 
-                                                        size=(height, width), 
-                                                        mode='bilinear', 
-                                                        align_corners=False).squeeze()
+        output_images = []
+        output_masks = []
+        w, h = None, None
+        
+        # 排除某些格式（如果需要的话，这里按照原LoadImage节点的逻辑）
+        excluded_formats = ['MPO']
+        
+        # 遍历图像的所有帧（对于多帧图像）
+        for i in ImageSequence.Iterator(img):
+            # 处理EXIF方向
+            i = ImageOps.exif_transpose(i)
+            
+            # 处理16位灰度图像
+            if i.mode == 'I':
+                i = i.point(lambda i: i * (1 / 255))
+            
+            # 转换为RGB
+            image = i.convert("RGB")
+            
+            # 检查所有帧的尺寸是否一致
+            if len(output_images) == 0:
+                w = image.size[0]
+                h = image.size[1]
+            
+            # 如果帧尺寸不一致，跳过这一帧
+            if image.size[0] != w or image.size[1] != h:
+                continue
+            
+            # 转换为numpy数组并归一化
+            image_np = np.array(image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_np)[None,]
+            
+            # 处理alpha通道（掩码）
+            if 'A' in i.getbands():
+                mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            elif i.mode == 'P' and 'transparency' in i.info:
+                # 处理调色板模式的透明通道
+                mask = np.array(i.convert('RGBA').getchannel('A')).astype(np.float32) / 255.0
+                mask = 1. - torch.from_numpy(mask)
+            else:
+                # 没有alpha通道时创建全白掩码
+                mask = torch.zeros((h, w), dtype=torch.float32, device="cpu")
+            
+            output_images.append(image_tensor)
+            output_masks.append(mask.unsqueeze(0))
+        
+        # 根据帧数决定返回单张还是批次
+        if len(output_images) > 1 and img.format not in excluded_formats:
+            output_image = torch.cat(output_images, dim=0)
+            output_mask = torch.cat(output_masks, dim=0)
         else:
-            mask = torch.zeros((height, width), dtype=torch.float32, device="cpu")
+            output_image = output_images[0]
+            output_mask = output_masks[0]
         
+        # 获取文件信息
         image_dir, imagename = os.path.split(image_path)
-        image_prefix= os.path.splitext(imagename)[0].lower()
-        image_dir  = os.path.relpath(image_dir, folder)
-
-        return (image, mask, image_dir, imagename, image_prefix)
+        image_prefix = os.path.splitext(imagename)[0]
+        image_dir = os.path.relpath(image_dir, folder)
+        
+        return (output_image, output_mask, image_dir, imagename, image_prefix)
 
 class SaveImageToPathZV:
     

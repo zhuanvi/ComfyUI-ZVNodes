@@ -43,7 +43,7 @@ class LoadVideoFromDirZV:
             raise FileNotFoundError(f"Folder '{folder}' cannot be found.")
         
         # 支持的视频格式
-        valid_extensions = [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".mpg", ".mpeg", ".m4v"]
+        valid_extensions = [".mp4", ".avi", ".mov", ".mkv", ".webp",".webm", ".flv", ".wmv", ".mpg", ".mpeg", ".m4v"]
         video_paths = []
         
         # 收集视频文件
