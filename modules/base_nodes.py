@@ -861,7 +861,7 @@ class GrsaiBaseClient(ABC):
     
     def __init__(self, api_key: str = ""):
         self.base_url_cn = "https://grsai.dakka.com.cn"
-        self.base_url_overseas = "https://api.grsai.com"
+        self.base_url_overseas = "https://grsaiapi.com"
         self.api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({
@@ -1055,9 +1055,11 @@ class GrsaiBaseClient(ABC):
                         continue
                         
                 elif result.get('code') == -22:
-                    print(f"任务不存在, 重试 {attempt + 1}/{max_retries}")
-                    time.sleep(retry_delay)
-                    continue
+                    # 任务不存在，退出
+                    print(f"任务不存在, 结束！")
+                    # time.sleep(retry_delay)
+                    # continue
+                    return None, "任务不存在", max_retries
                     
                 else:
                     error_msg = result.get('msg', '未知错误')

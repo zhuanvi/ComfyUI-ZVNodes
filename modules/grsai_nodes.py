@@ -161,7 +161,7 @@ class GrsaiNanoBananaNodeZV(GrsaiBaseNode):
             "required": {
                 "api_key": ("STRING", {"default": "", "multiline": False}),
                 "prompt": ("STRING", {"multiline": True, "default": "A cute cat playing on the grass"}),
-                "model": (["nano-banana-fast", "nano-banana", "nano-banana-pro"], {"default": "nano-banana-fast"}),
+                "model": (["nano-banana-fast", "nano-banana", "nano-banana-pro", "nano-banana-pro-vt", "nano-banana-pro-cl", "nano-banana-pro-vip", "nano-banana-pro-4k-vip"], {"default": "nano-banana-fast"}),
                 "aspect_ratio": (["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], 
                                {"default": "auto"}),
                 "image_size": (["1K", "2K", "4K"], {"default": "1K"}),
@@ -279,6 +279,7 @@ class GrsaiResultNodeZV(GrsaiBaseNode):
         if not data:
             return self._get_error_response(task_id, "未获取到任务数据")
         
+        
         status = data.get('status', '')
         progress = data.get('progress', 0)
         results = data.get('results', [])
@@ -305,7 +306,7 @@ class GrsaiResultNodeZV(GrsaiBaseNode):
         print(f"任务完成成功! URL: {url}")
         
         # 初始化输出
-        image_tensor = torch.zeros((0, 3, 512, 512))
+        image_tensor = torch.zeros((1, 3, 512, 512))
         video_adapter = VideoAdapter(None)
         
         # 检测媒体类型
@@ -314,7 +315,9 @@ class GrsaiResultNodeZV(GrsaiBaseNode):
         # 下载媒体文件
         if download_media and url:
             if detected_type == "image":
-                image_tensor = self.media_processor.download_image(url) or image_tensor
+                _image_tensor = self.media_processor.download_image(url)
+                if _image_tensor is not None:
+                    image_tensor = _image_tensor
             elif detected_type == "video":
                 video_path, error = self.media_processor.download_video(url, task_id)
                 if video_path:
@@ -325,7 +328,7 @@ class GrsaiResultNodeZV(GrsaiBaseNode):
     def _get_error_response(self, task_id, error_msg="", progress=0, status="error"):
         """获取错误响应"""
         return ("" if error_msg else "", task_id, "", "", progress, status, 
-                torch.zeros((0, 3, 512, 512)), VideoAdapter(None))
+                torch.zeros((1, 3, 512, 512)), VideoAdapter(None))
 
 
 class GrsaiLoadImageFromPathNodeZV(GrsaiBaseNode):
@@ -348,7 +351,7 @@ class GrsaiLoadImageFromPathNodeZV(GrsaiBaseNode):
         image_tensor = self.media_processor.load_image_from_path(image_path)
         if image_tensor is not None:
             return (image_tensor,)
-        return (torch.zeros((0, 3, 512, 512)),)
+        return (torch.zeros((1, 3, 512, 512)),)
 
 
 class GrsaiSoraUploadCharacterNodeZV(GrsaiBaseNode):

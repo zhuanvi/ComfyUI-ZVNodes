@@ -9,6 +9,7 @@ from PIL import Image
 import chardet
 import requests
 import tempfile
+import urllib3
 import shutil
 import folder_paths
 import io
@@ -448,35 +449,43 @@ class MediaProcessor:
     """媒体处理器"""
     
     @staticmethod
-    def download_image(url: str, timeout: int = 30) -> Optional[torch.Tensor]:
-        """下载图像并转换为tensor"""
+    def download_image(url: str, timeout: int = 300) -> Optional[torch.Tensor]:
+        if not url:
+            return None
+        
+        http = urllib3.PoolManager(timeout=timeout)
+        response = http.request('GET', url, preload_content=False)
+        filename = os.path.basename(url.split('?')[0])
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
-            response = requests.get(url, headers=headers, stream=True, timeout=timeout)
-            response.raise_for_status()
             
-            # 读取图像数据
-            image_data = io.BytesIO(response.content)
-            image = Image.open(image_data)
+            temp_file = tempfile.NamedTemporaryFile(
+                mode='wb',
+                dir=folder_paths.temp_directory,
+                prefix='download_',
+                suffix=f"_{filename}",
+                delete=False
+            )
+
+
+            shutil.copyfileobj(response, temp_file)
+            # 使用PIL打开图像
+            image = Image.open(temp_file.name)
             
-            # 转换为RGB
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # 转换为numpy数组
-            image_np = np.array(image).astype(np.float32) / 255.0
-            
-            # 转换为torch张量
-            image_tensor = torch.from_numpy(image_np)[None,]
+            image_tensor = pil2tensor(image)
+
+            temp_file.close()
             
             return image_tensor
             
         except Exception as e:
             print(f"下载图像错误: {str(e)}")
             return None
+        finally:
+            response.release_conn()
+            os.unlink(temp_file.name)
     
     @staticmethod
-    def download_video(url: str, task_id: str, timeout: int = 300) -> Tuple[Optional[str], Optional[str]]:
+    def download_video(url: str, task_id: str, timeout: int = 600) -> Tuple[Optional[str], Optional[str]]:
         """下载视频到本地"""
         try:
             output_dir = folder_paths.get_output_directory()
