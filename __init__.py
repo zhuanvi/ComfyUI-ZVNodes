@@ -18,6 +18,7 @@ node_list = [
     "api_nodes",
     "apimart_nodes",
     "grsai_nodes",
+    "prompt_nodes"
 ]
 
 NODE_CLASS_MAPPINGS = {}

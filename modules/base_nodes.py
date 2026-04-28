@@ -15,7 +15,7 @@ from .config import APIMartConfig
 from .api_client import APIMartClient
 from .task_manager import TaskManager
 from .response_parser import ResponseParser
-from .utils import batch_upload_image_to_apimart_cdn, image_to_temp_png
+from .utils import MediaProcessor, batch_upload_image_to_apimart_cdn, image_to_temp_png
 
 class BaseAPIMartNode(ABC):
     """API Mart 节点基类"""
@@ -26,6 +26,8 @@ class BaseAPIMartNode(ABC):
         self.client = None
         self.task_manager = None
         self.parser = ResponseParser()
+        self.media_processor = MediaProcessor()
+        
     
     def initialize(self, api_key: str = ""):
         """初始化客户端和任务管理器"""
@@ -306,13 +308,18 @@ class BaseAPIMartNode(ABC):
                     # 查询任务状态
                     code, body = self.client.query_task(task_id, poll_until_done=False)
                     last_response = body
+                    print(code,last_response)
                     
                     if code == 200:
                         # 提取状态信息
                         status = self.parser.extract_status(body)
+
+                        print(status)
                         
                         # 尝试提取结果
                         result = extract_func(body)
+
+                        print(result)
                         
                         # 如果成功提取到结果，立即返回
                         if result:

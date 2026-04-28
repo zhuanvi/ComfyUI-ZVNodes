@@ -6,7 +6,7 @@ import torch
 
 from .base_nodes import BaseAPIMartNode
 from .utils import (
-    pil2tensor, VideoAdapter, 
+    pil2tensor, VideoAdapter, MediaProcessor,
     batch_upload_image_to_apimart_cdn, 
     upload_video_to_apimart_cdn, 
     image_to_temp_png,
@@ -249,32 +249,34 @@ class ApimartDownloadSavedTaskVideoZV(BaseAPIMartNode):
                 return (VideoAdapter(None), "", f"任务未完成或无视频链接 | status={status}, progress={progress}%")
             
             # 下载视频
-            import folder_paths
-            base = folder_paths.get_output_directory()
-            output_name = f"apimart_{selected_task_id}.mp4"
-            output_path = os.path.join(base, output_name)
+            # import folder_paths
+            # base = folder_paths.get_output_directory()
+            # output_name = f"apimart_{selected_task_id}.mp4"
+            # output_path = os.path.join(base, output_name)
+
+            video_path, msg = self.media_processor.download_video(video_url, task_id)
             
-            if download_with_progress:
-                # 使用带进度的下载
-                def download_progress(percent, msg):
-                    print(f"下载: {msg}")
+            # if download_with_progress:
+            #     # 使用带进度的下载
+            #     def download_progress(percent, msg):
+            #         print(f"下载: {msg}")
                 
-                success, msg, file_size = self._download_media_with_progress(
-                    url=video_url,
-                    output_path=output_path,
-                    task_id=selected_task_id,
-                    progress_callback=download_progress
-                )
-            else:
-                # 普通下载
-                success, msg = self._download_with_retries(video_url, output_path)
-                file_size = None
+            #     success, msg, file_size = self._download_media_with_progress(
+            #         url=video_url,
+            #         output_path=output_path,
+            #         task_id=selected_task_id,
+            #         progress_callback=download_progress
+            #     )
+            # else:
+            #     # 普通下载
+            #     success, msg = self._download_with_retries(video_url, output_path)
+            #     file_size = None
             
-            if not success:
+            if video_path is None:
                 return (VideoAdapter(None), "", f"下载失败: {msg}")
             
             # 创建视频适配器
-            adapter = VideoAdapter(output_path)
+            adapter = VideoAdapter(video_path)
             
             # 生成详细报告
             report_parts = [
@@ -284,18 +286,18 @@ class ApimartDownloadSavedTaskVideoZV(BaseAPIMartNode):
                 f"重试次数: {retry_count}",
             ]
             
-            if file_size:
-                report_parts.append(f"文件大小: {file_size}字节")
+            # if file_size:
+            #     report_parts.append(f"文件大小: {file_size}字节")
             
-            if output_path:
-                report_parts.append(f"保存路径: {output_path}")
+            if video_path:
+                report_parts.append(f"保存路径: {video_path}")
             
             report = " | ".join(report_parts)
             
             # 从任务管理器中移除任务
             self.task_manager.remove_task(selected_task_id)
             
-            return (adapter, output_path, report)
+            return (adapter, video_path, report)
             
         except Exception as e:
             return self.handle_error(e, "下载视频任务失败")
@@ -728,13 +730,14 @@ class ApimartDownloadSavedTaskImageZV(BaseAPIMartNode):
                 selected_task_id = task_record.task_id
             
             # 使用基类的轮询方法获取图像URLs
-            image_urls, status, retry_count = self._poll_task_status(
+            image_urls, status, retry_count, last_response = self._poll_task_status(
                 task_id=selected_task_id,
                 max_retries=max_retries,
                 retry_interval=retry_interval,
                 extract_func=self.parser.extract_image_urls
             )
             
+            print(status, image_urls)
             # 检查是否获取到图像URLs
             if not image_urls:
                 empty_batch = torch.zeros((0, 3, 512, 512)) if torch else None
@@ -750,21 +753,27 @@ class ApimartDownloadSavedTaskImageZV(BaseAPIMartNode):
             
             for i, url in enumerate(image_urls):
                 try:
-                    # 生成文件名
-                    filename = f"apimart_{selected_task_id}_{i+1}.png"
-                    filepath = os.path.join(download_dir, filename)
-                    
-                    # 下载图像
-                    if self._download_image(url, filepath):
-                        # 加载图像为tensor
-                        tensor = self._load_image_to_tensor(filepath)
-                        if tensor is not None:
-                            downloaded_images.append(tensor)
-                            success_count += 1
-                        else:
-                            failed_urls.append(f"图像{i+1}加载失败")
+                    tensor = self.media_processor.download_image(url)
+                    if tensor is not None:
+                        downloaded_images.append(tensor)
+                        success_count += 1
                     else:
-                        failed_urls.append(f"图像{i+1}下载失败")
+                        failed_urls.append(f"图像{i+1}加载失败")
+                    # 生成文件名
+                    # filename = f"apimart_{selected_task_id}_{i+1}.png"
+                    # filepath = os.path.join(download_dir, filename)
+                    
+                    # # 下载图像
+                    # if self._download_image(url, filepath):
+                    #     # 加载图像为tensor
+                    #     tensor = self._load_image_to_tensor(filepath)
+                    #     if tensor is not None:
+                    #         downloaded_images.append(tensor)
+                    #         success_count += 1
+                    #     else:
+                    #         failed_urls.append(f"图像{i+1}加载失败")
+                    # else:
+                    #     failed_urls.append(f"图像{i+1}下载失败")
                         
                 except Exception as e:
                     failed_urls.append(f"图像{i+1}处理失败: {str(e)}")

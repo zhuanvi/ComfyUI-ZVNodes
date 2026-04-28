@@ -450,6 +450,7 @@ class MediaProcessor:
     
     @staticmethod
     def download_image(url: str, timeout: int = 300) -> Optional[torch.Tensor]:
+
         if not url:
             return None
         
@@ -486,31 +487,66 @@ class MediaProcessor:
     
     @staticmethod
     def download_video(url: str, task_id: str, timeout: int = 600) -> Tuple[Optional[str], Optional[str]]:
-        """下载视频到本地"""
+        if not url:
+            return None
+        
+        http = urllib3.PoolManager(timeout=timeout)
+        response = http.request('GET', url, preload_content=False)
+        filename = os.path.basename(url.split('?')[0])
         try:
-            output_dir = folder_paths.get_output_directory()
-            video_filename = f"grsai_video_{task_id}.mp4"
-            video_path = os.path.join(output_dir, video_filename)
             
-            print(f"下载视频: {url}")
+            temp_file = tempfile.NamedTemporaryFile(
+                mode='wb',
+                dir=folder_paths.temp_directory,
+                prefix='download_',
+                suffix=f"_{filename}",
+                delete=False
+            )
+
+            base = folder_paths.get_output_directory()
+            output_name = f"{filename}"
+            output_path = os.path.join(base, output_name)
+
+            shutil.copyfileobj(response, temp_file)
+
+            shutil.copy(temp_file.name, output_path)
+
+            temp_file.close()
             
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
-            response = requests.get(url, headers=headers, stream=True, timeout=timeout)
-            response.raise_for_status()
-            
-            # 保存视频
-            with open(video_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            print(f"视频下载成功: {video_path}")
-            return video_path, None
+            return output_path, None
             
         except Exception as e:
             error_msg = f"下载视频错误: {str(e)}"
             print(error_msg)
-            return None, error_msg
+            return output_path, error_msg
+        finally:
+            response.release_conn()
+            os.unlink(temp_file.name)
+        # """下载视频到本地"""
+        # try:
+        #     output_dir = folder_paths.get_output_directory()
+        #     video_filename = f"grsai_video_{task_id}.mp4"
+        #     video_path = os.path.join(output_dir, video_filename)
+            
+        #     print(f"下载视频: {url}")
+            
+        #     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+        #     response = requests.get(url, headers=headers, stream=True, timeout=timeout)
+        #     response.raise_for_status()
+            
+        #     # 保存视频
+        #     with open(video_path, 'wb') as f:
+        #         for chunk in response.iter_content(chunk_size=8192):
+        #             if chunk:
+        #                 f.write(chunk)
+            
+        #     print(f"视频下载成功: {video_path}")
+        #     return video_path, None
+            
+        # except Exception as e:
+        #     error_msg = f"下载视频错误: {str(e)}"
+        #     print(error_msg)
+        #     return None, error_msg
     
     @staticmethod
     def detect_media_type(result_data: Dict[str, Any], media_type: str, auto_detect: bool) -> str:

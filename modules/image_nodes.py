@@ -984,6 +984,8 @@ class ImageCounterNodeZV:
             "required": {
                 "directory": ("STRING", {"default": "", "folder_picker": True}),
                 "include_subfolders": ("BOOLEAN", {"default": False}),
+                # 添加随机种子，用于绕过懒加载缓存
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
             }
         }
     
@@ -991,9 +993,9 @@ class ImageCounterNodeZV:
     RETURN_NAMES = ("image_count",)
     FUNCTION = "count_images"
     CATEGORY = "ZVNodes/image"
-    DESCRIPTION = "Count images in a directory"
+    DESCRIPTION = "Count images in a directory (seed input forces refresh)"
 
-    def count_images(self, directory, include_subfolders):
+    def count_images(self, directory, include_subfolders, seed):
         if not os.path.isdir(directory):
             raise ValueError(f"Directory not found: {directory}")
         

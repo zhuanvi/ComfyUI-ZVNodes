@@ -18,6 +18,48 @@ from scenedetect.frame_timecode import FrameTimecode
 
 from .utils import generate_node_mappings, calculate_file_hash
 
+class VideoCounterNodeZV:
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "directory": ("STRING", {"default": "", "folder_picker": True}),
+                "include_subfolders": ("BOOLEAN", {"default": False}),
+                # 添加随机种子，用于绕过懒加载缓存
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("video_count",)
+    FUNCTION = "count_videos"
+    CATEGORY = "ZVNodes/video"
+    DESCRIPTION = "Count videos in a directory (seed input forces refresh)"
+
+    def count_videos(self, directory, include_subfolders, seed):
+        if not os.path.isdir(directory):
+            raise ValueError(f"Directory not found: {directory}")
+        
+        # 支持的视频扩展名
+        extensions = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"]
+        
+        count = 0
+        if include_subfolders:
+            for _, _, files in os.walk(directory):
+                for file in files:
+                    ext = os.path.splitext(file)[-1].lower()
+                    if ext in extensions:
+                        count += 1
+        else:
+            for file in os.listdir(directory):
+                if os.path.isfile(os.path.join(directory, file)):
+                    ext = os.path.splitext(file)[-1].lower()
+                    if ext in extensions:
+                        count += 1
+        
+        return (count,)
+
 class LoadVideoFromDirZV:
     @classmethod
     def INPUT_TYPES(s):
@@ -386,6 +428,7 @@ class VideoSceneDetectorZV:
 
     
 NODE_CONFIG = {
+    "VideoCounterNodeZV": {"class": VideoCounterNodeZV, "name": "Count Video (Directory)"},
     "VideoSpeedZV": {"class": VideoSpeedZV, "name": "Video Speed"},
     "VideoSceneDetectorZV": {"class": VideoSceneDetectorZV, "name": "Video Scene Detector"},
     "LoadVideoFromDirZV":{"class": LoadVideoFromDirZV, "name": "Load One Video (Directory)"},
