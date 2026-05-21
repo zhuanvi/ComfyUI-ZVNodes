@@ -1190,23 +1190,34 @@ class SaveImageToPathZV:
         assert isinstance(num_padding, int)
         assert isinstance(overwrite, bool)
 
-        image_path = os.path.join(folder,subfolder,f"{prefix}{file_extension}")
-        path: Path = Path(image_path)
+        base_path = os.path.join(folder, subfolder)
+        Path(base_path).mkdir(exist_ok=True, parents=True)
+        
+        # 生成基础文件路径
+        image_path = os.path.join(base_path, f"{prefix}{file_extension}")
+        path = Path(image_path)
+        
+        # 如果不允许覆盖且文件已存在，自动添加编号
+        if not overwrite and image.shape[0] == 1:
+            counter = 1
+            while path.exists():
+                padded_counter = str(counter).zfill(num_padding)
+                new_filename = f"{prefix}_{padded_counter}{file_extension}"
+                image_path = os.path.join(base_path, new_filename)
+                path = Path(image_path)
+                counter += 1
+        
         image_path_list = []
         results = []
-        if not overwrite and path.exists():
-            return (image_path_list,)
-
+        
         path.parent.mkdir(exist_ok=True, parents=True)
 
         if metadata:
-            _prompt=prompt
-            _extra_pnginfo=extra_pnginfo
+            _prompt = prompt
+            _extra_pnginfo = extra_pnginfo
         else:
-            _prompt=None
-            _extra_pnginfo=None
-        
-        
+            _prompt = None
+            _extra_pnginfo = None
 
         if image.shape[0] == 1:
             # batch has 1 image only
@@ -1220,7 +1231,8 @@ class SaveImageToPathZV:
                 )
             )
             if caption is not None:
-                txt_path = path.parent / (path.stem+caption_file_extension)
+                # 确保caption文件名与image文件名严格一致
+                txt_path = path.parent / (path.stem + caption_file_extension)
                 with txt_path.open('w', encoding="UTF-8") as f:
                     f.write(caption)
             image_path_list.append(str(path))
@@ -1233,7 +1245,16 @@ class SaveImageToPathZV:
                 else:
                     subpath = path.parent / batch_name / path.name
                     subpath.parent.mkdir(exist_ok=True, parents=True)
-                    
+                
+                # 如果不允许覆盖，检查文件是否存在并自动重命名
+                if not overwrite:
+                    counter = 1
+                    original_stem = subpath.stem
+                    while subpath.exists():
+                        padded_counter = str(counter).zfill(num_padding)
+                        subpath = subpath.with_stem(f"{original_stem}_{padded_counter}")
+                        counter += 1
+                
                 results.append(
                     save_image(
                         img,
@@ -1244,7 +1265,8 @@ class SaveImageToPathZV:
                     )
                 )
                 if caption is not None:
-                    txt_path = subpath.parent / (subpath.stem+caption_file_extension)
+                    # 确保caption文件名与image文件名严格一致，使用相同的stem
+                    txt_path = subpath.parent / (subpath.stem + caption_file_extension)
                     with txt_path.open('w', encoding="UTF-8") as f:
                         f.write(caption)
                 image_path_list.append(str(subpath))

@@ -10,8 +10,10 @@ import folder_paths
 import tempfile
 import subprocess
 from comfy.comfy_types import IO
+from comfy_api.latest import io, Types, Input, ui
 from comfy_api.input import VideoInput
 from comfy_api.util import VideoContainer, VideoCodec, VideoComponents
+from comfy.cli_args import args
 from scenedetect import SceneManager, VideoManager, ContentDetector, AdaptiveDetector, ThresholdDetector
 from scenedetect.video_splitter import split_video_ffmpeg
 from scenedetect.frame_timecode import FrameTimecode
@@ -426,9 +428,59 @@ class VideoSceneDetectorZV:
         return (scene_paths, info_str, [json_data])
 
 
+class SaveVideoToPathZV(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SaveVideoToPathZV",
+            search_aliases=["export video"],
+            display_name="Save Video (Directory)",
+            category="video",
+            essentials_category="Basics",
+            description="Saves the input images to your ComfyUI output directory.",
+            inputs=[
+                io.Video.Input("video", tooltip="The video to save."),
+                io.String.Input("folder", default=folder_paths.get_output_directory(), tooltip="The folder for the file to save."),
+                io.String.Input("filename_prefix", default="video/ComfyUI", tooltip="The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."),
+                io.Combo.Input("format", options=Types.VideoContainer.as_input(), default="auto", tooltip="The format to save the video as."),
+                io.Combo.Input("codec", options=Types.VideoCodec.as_input(), default="auto", tooltip="The codec to use for the video."),
+            ],
+            hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, video: Input.Video, folder, filename_prefix, format: str, codec):
+        width, height = video.get_dimensions()
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
+            filename_prefix,
+            folder,
+            width,
+            height
+        )
+        saved_metadata = None
+        if not args.disable_metadata:
+            metadata = {}
+            if cls.hidden.extra_pnginfo is not None:
+                metadata.update(cls.hidden.extra_pnginfo)
+            if cls.hidden.prompt is not None:
+                metadata["prompt"] = cls.hidden.prompt
+            if len(metadata) > 0:
+                saved_metadata = metadata
+        file = f"{filename}_{counter:05}_.{Types.VideoContainer.get_extension(format)}"
+        video.save_to(
+            os.path.join(full_output_folder, file),
+            format=Types.VideoContainer(format),
+            codec=codec,
+            metadata=saved_metadata
+        )
+
+        return
+
     
 NODE_CONFIG = {
     "VideoCounterNodeZV": {"class": VideoCounterNodeZV, "name": "Count Video (Directory)"},
+    "SaveVideoToPathZV": {"class": SaveVideoToPathZV, "name": "Save Video (Directory)"},
     "VideoSpeedZV": {"class": VideoSpeedZV, "name": "Video Speed"},
     "VideoSceneDetectorZV": {"class": VideoSceneDetectorZV, "name": "Video Scene Detector"},
     "LoadVideoFromDirZV":{"class": LoadVideoFromDirZV, "name": "Load One Video (Directory)"},
