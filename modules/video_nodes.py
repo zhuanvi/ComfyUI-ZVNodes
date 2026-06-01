@@ -17,8 +17,12 @@ from comfy.cli_args import args
 from scenedetect import SceneManager, VideoManager, ContentDetector, AdaptiveDetector, ThresholdDetector
 from scenedetect.video_splitter import split_video_ffmpeg
 from scenedetect.frame_timecode import FrameTimecode
+import random
+import math
+import re
+import time
 
-from .utils import generate_node_mappings, calculate_file_hash
+from .utils import generate_node_mappings, calculate_file_hash, get_temp_video_path, run_ffmpeg, save_tensor_images
 
 class VideoCounterNodeZV:
     
@@ -477,6 +481,415 @@ class SaveVideoToPathZV(io.ComfyNode):
 
         return
 
+ALL_XFADE_TRANSITIONS = [
+    "fade", "fadefast", "fadeslow", "fadeblack", "fadewhite", "fadegrays",
+    "dissolve", "pixelize", "hblur", "distance",
+    "wipeleft", "wiperight", "wipeup", "wipedown",
+    "wipetl", "wipetr", "wipebl", "wipebr",
+    "slideleft", "slideright", "slideup", "slidedown",
+    "smoothleft", "smoothright", "smoothup", "smoothdown",
+    "circlecrop", "rectcrop", "circleopen", "circleclose",
+    "vertopen", "vertclose", "horzopen", "horzclose",
+    "diagtl", "diagtr", "diagbl", "diagbr",
+    "hlslice", "hrslice", "vuslice", "vdslice",
+    "hlwind", "hrwind", "vuwind", "vdwind",
+    "radial", "zoomin",
+    "squeezeh", "squeezev",
+    "coverleft", "coverright", "coverup", "coverdown",
+    "revealleft", "revealright", "revealup", "revealdown",
+]
+
+class FFmpegImageSlideShowZV:
+    @classmethod
+    def INPUT_TYPES(cls):
+        transitions = ["random", "custom_random"] + ALL_XFADE_TRANSITIONS
+        return {
+            "required": {
+                "image_folder": ("STRING", {"default": "", "multiline": False}),
+                "output_folder": ("STRING", {"default": "", "multiline": False}),
+                "frame_duration": ("FLOAT", {"default": 3.0, "min": 0.1, "max": 60.0, "step": 0.1}),
+                "transition_duration": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.1}),
+                "transition_type": (transitions,),
+                "fps": ("INT", {"default": 30, "min": 1, "max": 120}),
+                "width": ("INT", {"default": 1920, "min": 64, "max": 8192}),
+                "height": ("INT", {"default": 1080, "min": 64, "max": 8192}),
+                "ken_burns_mode": (["disabled", "all", "custom"], {"default": "disabled"}),
+                "dynamic_indices": ("STRING", {"default": "0,2", "multiline": False}),
+                "zoom_range_min": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 4.0, "step": 0.01}),
+                "zoom_range_max": ("FLOAT", {"default": 1.3, "min": 1.0, "max": 4.0, "step": 0.01}),
+                "pan_strength": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01}),
+            },
+            "optional": {
+                "custom_transitions": ("STRING", {
+                    "default": "fade,wipeleft,wiperight,circlecrop,rectcrop,dissolve",
+                    "multiline": False
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("video_path",)
+    FUNCTION = "create_slideshow"
+    OUTPUT_NODE = True
+    CATEGORY = "FFmpeg/Animation"
+
+    def create_slideshow(self, image_folder, output_folder, frame_duration, transition_duration,
+                         transition_type, fps, width, height, ken_burns_mode, dynamic_indices,
+                         zoom_range_min, zoom_range_max, pan_strength, custom_transitions=""):
+        # ==================== 0. 扫描文件夹 ====================
+        if not os.path.isdir(image_folder):
+            raise ValueError(f"无效的输入文件夹路径: {image_folder}")
+
+        def natural_sort_key(s):
+            return [int(text) if text.isdigit() else text.lower()
+                    for text in re.split(r'([0-9]+)', os.path.basename(s))]
+
+        valid_img_ext = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.gif')
+        img_files = sorted(
+            [os.path.join(image_folder, f) for f in os.listdir(image_folder)
+             if f.lower().endswith(valid_img_ext)],
+            key=natural_sort_key
+        )
+
+        if len(img_files) < 2:
+            raise ValueError(f"文件夹中至少需要 2 张图片，当前找到 {len(img_files)} 张。")
+
+        batch_size = len(img_files)
+        print(f"[FFmpegImageSlideShow] 扫描到图片数量：{batch_size}")
+
+        # 扫描音频文件（只取第一个）
+        valid_audio_ext = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wma', '.opus')
+        audio_files = []
+        for f in os.listdir(image_folder):
+            if f.lower().endswith(valid_audio_ext):
+                audio_files.append(os.path.join(image_folder, f))
+                break
+
+        # ==================== 0.5 图片预处理：统一转换为标准 RGB PNG ====================
+        temp_img_dir = os.path.join(folder_paths.get_temp_directory(), "slideshow_processed")
+        os.makedirs(temp_img_dir, exist_ok=True)
+        processed_paths = []
+
+        for idx, src_path in enumerate(img_files):
+            try:
+                dst_path = os.path.join(temp_img_dir, f"processed_{idx:04d}.png")
+                with Image.open(src_path) as img:
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        if img.mode in ('RGBA', 'LA'):
+                            background.paste(img, mask=img.split()[-1])
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    img.save(dst_path, 'PNG', compress_level=3)
+                processed_paths.append(os.path.abspath(dst_path))
+                print(f"[FFmpegImageSlideShow] 预处理图片 {idx}: {os.path.basename(src_path)} -> {dst_path}")
+            except Exception as e:
+                print(f"[Warning] 图片预处理失败 {src_path}: {e}，尝试直接使用原图")
+                processed_paths.append(os.path.abspath(src_path))
+
+        # ==================== 1. Ken Burns 索引解析 ====================
+        use_ken_burns = [False] * batch_size
+        if ken_burns_mode == "all":
+            use_ken_burns = [True] * batch_size
+        elif ken_burns_mode == "custom":
+            try:
+                indices = [int(x.strip()) for x in dynamic_indices.split(",") if x.strip() != ""]
+                for idx in indices:
+                    if 0 <= idx < batch_size:
+                        use_ken_burns[idx] = True
+            except Exception:
+                print("[Warning] dynamic_indices 格式错误，所有图片将使用静态效果。")
+        print(f"[FFmpegImageSlideShow] 动态效果索引：{[i for i, v in enumerate(use_ken_burns) if v]}")
+
+        # ==================== 2. 精确帧数与总时长计算 ====================
+        frame_d = max(1, int(round(frame_duration * fps)))
+        trans_d = max(0, int(round(transition_duration * fps)))
+        transition_dur_sec = trans_d / fps if trans_d > 0 else 0.0
+
+        frame_counts = []
+        for idx in range(batch_size):
+            if idx == 0:
+                fc = frame_d + trans_d
+            elif idx == batch_size - 1:
+                fc = frame_d
+            else:
+                fc = frame_d + trans_d
+            frame_counts.append(max(1, fc))
+
+        total_video_frames = sum(frame_counts) - (batch_size - 1) * trans_d
+        video_duration = total_video_frames / fps
+        print(f"[FFmpegImageSlideShow] 视频总时长: {video_duration:.3f}s, 总帧数: {total_video_frames}")
+
+        # ==================== 3. 生成每个图片的视频片段 ====================
+        clip_paths = []
+        for idx, img_path in enumerate(processed_paths):
+            clip_path = get_temp_video_path(prefix=f"clip_{idx}")
+            total_frames = frame_counts[idx]
+
+            if use_ken_burns[idx]:
+                if total_frames < 2:
+                    total_frames = 2
+
+                start_zoom = random.uniform(zoom_range_min, zoom_range_max)
+                end_zoom   = random.uniform(zoom_range_min, zoom_range_max)
+                start_pan_x = random.uniform(-pan_strength, pan_strength) * width
+                start_pan_y = random.uniform(-pan_strength, pan_strength) * height
+                end_pan_x   = random.uniform(-pan_strength, pan_strength) * width
+                end_pan_y   = random.uniform(-pan_strength, pan_strength) * height
+
+                denom = max(1, total_frames - 1)
+                ease_expr = f"(0.5-0.5*cos(PI*on/{denom}))"
+                zoom_expr = f"{start_zoom:.6f}+({end_zoom:.6f}-{start_zoom:.6f})*{ease_expr}"
+                zoom_cur = f"{start_zoom:.6f}+({end_zoom:.6f}-{start_zoom:.6f})*(0.5-0.5*cos(PI*on/{denom}))"
+                x_expr = f"{start_pan_x:.2f}+({end_pan_x:.2f}-{start_pan_x:.2f})*{ease_expr}+iw/2-iw/(2*{zoom_cur})"
+                y_expr = f"{start_pan_y:.2f}+({end_pan_y:.2f}-{start_pan_y:.2f})*{ease_expr}+ih/2-ih/(2*{zoom_cur})"
+
+                filter_str = (
+                    f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+                    f":d={total_frames}:s={width}x{height}:fps={fps}"
+                )
+
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", img_path,
+                    "-filter_complex", filter_str,
+                    "-frames:v", str(total_frames),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-crf", "18",
+                    "-preset", "medium",
+                    "-an",
+                    clip_path
+                ]
+            else:
+                vf = (
+                    f"loop=loop=-1:size=1:start=0,"
+                    f"scale={width}:{height}:flags=lanczos,"
+                    f"fps={fps},"
+                    f"format=pix_fmts=yuv420p"
+                )
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", img_path,
+                    "-vf", vf,
+                    "-frames:v", str(total_frames),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-crf", "18",
+                    "-preset", "medium",
+                    "-an",
+                    clip_path
+                ]
+
+            run_ffmpeg(cmd, f"Generate clip {idx}")
+            clip_paths.append(clip_path)
+
+        # ==================== 4. 音频处理 ====================
+        real_transitions = ALL_XFADE_TRANSITIONS
+
+        audio_filter_str = ""
+        audio_input_count = 0
+        use_audio = False
+
+        if audio_files:
+            audio_path = audio_files[0]
+            audio_dur = None
+
+            try:
+                result = subprocess.run(
+                    ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                     '-of', 'default=noprint_wrappers=1:nokey=1', audio_path],
+                    capture_output=True, text=True, timeout=15
+                )
+                audio_dur = float(result.stdout.strip())
+                print(f"[FFmpegImageSlideShow] 检测到音频: {os.path.basename(audio_path)}, 时长: {audio_dur:.3f}s")
+            except Exception as e:
+                print(f"[Warning] ffprobe 探测失败: {e}，将使用 aloop 简单循环方案")
+
+            if audio_dur and audio_dur > 0:
+                use_audio = True
+                crossfade = min(0.5, audio_dur * 0.4)
+
+                if audio_dur >= video_duration:
+                    audio_input_count = 1
+                    aidx = batch_size
+                    fade_out_start = max(0, video_duration - 1.0)
+                    audio_filter_str = (
+                        f"[{aidx}:a]atrim=start=0:end={video_duration:.6f},"
+                        f"afade=t=in:st=0:d=0.5,"
+                        f"afade=t=out:st={fade_out_start:.6f}:d=1.0[aout];"
+                    )
+                else:
+                    if audio_dur > crossfade:
+                        n_loops = math.ceil((video_duration - crossfade) / (audio_dur - crossfade))
+                    else:
+                        n_loops = max(2, int(math.ceil(video_duration / max(audio_dur, 0.1))))
+                    n_loops = min(n_loops, 100)
+
+                    audio_input_count = n_loops
+                    print(f"[FFmpegImageSlideShow] 音频将循环 {n_loops} 次 (crossfade={crossfade:.2f}s)")
+
+                    audio_filters = []
+                    base_idx = batch_size
+                    for i in range(n_loops):
+                        audio_filters.append(
+                            f"[{base_idx + i}:a]atrim=start=0:end={audio_dur:.6f}[a{i}];"
+                        )
+
+                    cur_label = "a0"
+                    for i in range(1, n_loops):
+                        out_label = f"ac{i}"
+                        audio_filters.append(
+                            f"[{cur_label}][a{i}]acrossfade=d={crossfade:.3f}[{out_label}];"
+                        )
+                        cur_label = out_label
+
+                    fade_out_start = max(0, video_duration - 1.0)
+                    audio_filters.append(
+                        f"[{cur_label}]atrim=start=0:end={video_duration:.6f},"
+                        f"afade=t=in:st=0:d={crossfade:.3f},"
+                        f"afade=t=out:st={fade_out_start:.6f}:d=1.0[aout];"
+                    )
+                    audio_filter_str = "".join(audio_filters)
+            else:
+                use_audio = True
+                audio_input_count = 1
+                aidx = batch_size
+                fade_out_start = max(0, video_duration - 1.0)
+                audio_filter_str = (
+                    f"[{aidx}:a]aloop=loop=-1:size=0,"
+                    f"atrim=start=0:end={video_duration:.6f},"
+                    f"afade=t=in:st=0:d=0.5,"
+                    f"afade=t=out:st={fade_out_start:.6f}:d=1.0[aout];"
+                )
+                print("[FFmpegImageSlideShow] 使用 aloop 简单循环音频")
+
+        # ==================== 5. 拼接视频片段 ====================
+        inputs = []
+        for p in clip_paths:
+            inputs += ["-i", p]
+
+        if use_audio:
+            for _ in range(audio_input_count):
+                inputs += ["-i", audio_files[0]]
+
+        # 解析自定义随机池
+        custom_pool = []
+        if transition_type == "custom_random" and custom_transitions.strip():
+            custom_pool = [t.strip() for t in custom_transitions.split(",") if t.strip()]
+            # 过滤掉无效的转场
+            custom_pool = [t for t in custom_pool if t in ALL_XFADE_TRANSITIONS]
+            if not custom_pool:
+                print("[Warning] custom_transitions 无有效转场，回退到全部随机")
+                custom_pool = ALL_XFADE_TRANSITIONS
+        elif transition_type == "custom_random":
+            print("[Warning] custom_transitions 为空，回退到全部随机")
+            custom_pool = ALL_XFADE_TRANSITIONS
+
+        if trans_d == 0:
+            concat_inputs = "".join(f"[{i}:v]" for i in range(batch_size))
+            video_filter_str = f"{concat_inputs}concat=n={batch_size}:v=1:a=0[vtout];"
+            prev_label = "vtout"
+        else:
+            video_filters = []
+            prev_label = "0:v"
+            cumulative_frames = frame_counts[0]
+
+            for i in range(batch_size - 1):
+                inA = f"[{prev_label}]"
+                inB = f"[{i+1}:v]"
+                offset_frames = cumulative_frames - trans_d
+                offset_sec = offset_frames / fps
+                if offset_sec < 0:
+                    offset_sec = 0.0
+
+                # 转场选择逻辑
+                if transition_type == "random":
+                    actual_transition = random.choice(real_transitions)
+                    print(f"[FFmpegImageSlideShow] 片段 {i}->{i+1} 转场: {actual_transition}")
+                elif transition_type == "custom_random":
+                    actual_transition = random.choice(custom_pool)
+                    print(f"[FFmpegImageSlideShow] 片段 {i}->{i+1} 转场(自定义池): {actual_transition}")
+                else:
+                    actual_transition = transition_type
+
+                out_label = f"vt{i+1}"
+                video_filters.append(
+                    f"{inA}{inB}xfade=transition={actual_transition}"
+                    f":duration={transition_dur_sec:.6f}"
+                    f":offset={offset_sec:.6f}[{out_label}];"
+                )
+                prev_label = out_label
+                cumulative_frames += frame_counts[i+1] - trans_d
+
+            video_filter_str = "".join(video_filters)
+
+        filter_complex = (video_filter_str + audio_filter_str).rstrip(';')
+
+        # ==================== 6. 确定最终输出路径（使用文件夹名称） ====================
+        if output_folder and os.path.isdir(output_folder):
+            out_dir = output_folder
+        else:
+            out_dir = folder_paths.get_temp_directory() if hasattr(folder_paths, 'get_temp_directory') else os.path.join(os.path.expanduser("~"), "ComfyUI", "temp")
+            if not os.path.isdir(out_dir):
+                os.makedirs(out_dir, exist_ok=True)
+            print(f"[FFmpegImageSlideShow] output_folder 无效，回退到临时目录: {out_dir}")
+
+        # 使用文件夹名称作为文件名（清理非法字符）
+        folder_name = os.path.basename(os.path.normpath(image_folder))
+        safe_name = re.sub(r'[\\/*?:"<>|]', '_', folder_name)
+        if not safe_name:
+            safe_name = "slideshow"
+        output_filename = f"{safe_name}.mp4"
+        output_path = os.path.join(out_dir, output_filename)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # ==================== 7. 最终编码输出 ====================
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", filter_complex,
+            "-map", f"[{prev_label}]",
+        ]
+        if use_audio:
+            cmd += ["-map", "[aout]"]
+
+        cmd += [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",
+            "-preset", "medium",
+            "-movflags", "+faststart",
+        ]
+        if use_audio:
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+        else:
+            cmd += ["-an"]
+        cmd += [output_path]
+
+        run_ffmpeg(cmd, "Concatenate clips with audio")
+
+        # ==================== 8. 清理临时文件 ====================
+        for p in clip_paths:
+            try:
+                os.remove(p)
+            except Exception as e:
+                print(f"[Warning] 删除临时视频片段失败：{p} - {e}")
+        
+        for p in processed_paths:
+            if p.startswith(os.path.abspath(temp_img_dir)):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        try:
+            os.rmdir(temp_img_dir)
+        except Exception:
+            pass
+
+        print(f"[FFmpegImageSlideShow] 成片已保存至: {output_path}")
+        return {"ui": {"video": [output_path]}, "result": (output_path,)}
     
 NODE_CONFIG = {
     "VideoCounterNodeZV": {"class": VideoCounterNodeZV, "name": "Count Video (Directory)"},
@@ -484,6 +897,7 @@ NODE_CONFIG = {
     "VideoSpeedZV": {"class": VideoSpeedZV, "name": "Video Speed"},
     "VideoSceneDetectorZV": {"class": VideoSceneDetectorZV, "name": "Video Scene Detector"},
     "LoadVideoFromDirZV":{"class": LoadVideoFromDirZV, "name": "Load One Video (Directory)"},
+    "FFmpegImageSlideShowZV": {"class": FFmpegImageSlideShowZV, "name": "Image Slide Show (FFmpeg)"},
 }
 
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = generate_node_mappings(NODE_CONFIG)

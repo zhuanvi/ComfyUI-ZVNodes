@@ -3,3 +3,4 @@ scenedetect<0.6.0
 imageio
 imageio-ffmpeg
 volcengine-python-sdk[ark]
+segmentation-models-pytorch

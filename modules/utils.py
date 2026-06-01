@@ -13,6 +13,8 @@ import urllib3
 import shutil
 import folder_paths
 import io
+import uuid
+import subprocess
 
 def detect_encoding(file_path):
     with open(file_path, 'rb') as f:
@@ -125,267 +127,6 @@ def _tensor_to_pil(img_any: Any):
         return None
     return None
 
-def image_to_temp_png(image: Any, max_side: int = 1024) -> Optional[str]:
-    """将图像转换为临时PNG文件"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-            
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-            
-        if pil_img is None:
-            return None
-            
-        try:
-            if hasattr(pil_img, "mode") and pil_img.mode not in ("RGB", "RGBA") and Image is not None:
-                pil_img = pil_img.convert("RGB")
-        except Exception:
-            pass
-            
-        try:
-            if Image is not None:
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    pil_img = pil_img.copy()
-                    pil_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
-            
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        pil_img.save(tmp, "PNG")
-        tmp.flush()
-        tmp.close()
-        return tmp.name
-    except Exception:
-        return None
-
-def _upload_image_to_apimart_cdn(image: Any, api_key: Optional[str], max_side: int = 1024) -> Optional[str]:
-    """上传图像到Apimart CDN"""
-    temp_png = image_to_temp_png(image, max_side=max_side)
-    if not temp_png:
-        return None
-    elif isinstance(temp_png, list):
-        temp_png = temp_png[0]
-        
-    try:
-        headers = _headers(api_key)
-        token_res = requests.post(
-            "https://grsai.dakka.com.cn/client/resource/newUploadTokenZH",
-            headers=headers,
-            json={"sux": "png"},
-            timeout=30,
-        )
-        if token_res.status_code != 200:
-            return None
-            
-        try:
-            token_data = token_res.json().get("data") or {}
-        except Exception:
-            return None
-            
-        token = token_data.get("token")
-        key = token_data.get("key")
-        up_url = token_data.get("url")
-        domain = token_data.get("domain")
-        if not (token and key and up_url and domain):
-            return None
-
-        with open(temp_png, "rb") as f:
-            up_resp = requests.post(up_url, data={"token": token, "key": key}, files={"file": f}, timeout=120)
-        if up_resp.status_code not in (200, 201):
-            return None
-
-        public_url = f"{domain}/{key}"
-        return public_url if public_url.startswith("http") else None
-    except Exception:
-        return None
-    finally:
-        try:
-            if temp_png and os.path.exists(temp_png):
-                os.unlink(temp_png)
-        except Exception:
-            pass
-
-
-def image_to_temp_file(image: Any, max_side: int = 1024, format: str = "PNG") -> Optional[str]:
-    """将图像转换为临时文件，支持指定格式"""
-    try:
-        try:
-            from PIL import Image
-        except Exception:
-            Image = None
-        pil_img = None
-        if Image is not None and hasattr(image, "save"):
-            pil_img = image
-        elif isinstance(image, dict):
-            candidate = image.get("image") or (image.get("images")[0] if image.get("images") else None)
-            if candidate is not None:
-                if hasattr(candidate, "save"):
-                    pil_img = candidate
-                elif hasattr(candidate, "to_pil"):
-                    pil_img = candidate.to_pil()
-                else:
-                    pil_img = _tensor_to_pil(candidate)
-        elif hasattr(image, "to_pil"):
-            pil_img = image.to_pil()
-        else:
-            pil_img = _tensor_to_pil(image)
-        if pil_img is None:
-            return None
-        try:
-            if hasattr(pil_img, "mode") and pil_img.mode not in ("RGB", "RGBA") and Image is not None:
-                pil_img = pil_img.convert("RGB")
-        except Exception:
-            pass
-        try:
-            if Image is not None:
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    pil_img = pil_img.copy()
-                    pil_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-        except Exception:
-            pass
-        
-        if format.upper() == "PNG":
-            suffix = ".png"
-            save_format = "PNG"
-        elif format.upper() == "JPG" or format.upper() == "JPEG":
-            suffix = ".jpg"
-            save_format = "JPEG"
-        else:
-            suffix = ".png"
-            save_format = "PNG"
-            
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-        pil_img.save(tmp, save_format)
-        tmp.flush()
-        tmp.close()
-        return tmp.name
-    except Exception:
-        return None
-
-
-def _video_to_temp_file(video: Any) -> Optional[str]:
-    """将视频转换为临时文件"""
-    try:
-        if isinstance(video, str) and os.path.exists(video):
-            ext = os.path.splitext(video)[1].lower() or ".mp4"
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.close()
-            shutil.copyfile(video, tmp.name)
-            return tmp.name
-
-        path = getattr(video, "path", None)
-        if isinstance(path, str) and os.path.exists(path):
-            ext = os.path.splitext(path)[1].lower() or ".mp4"
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.close()
-            shutil.copyfile(path, tmp.name)
-            return tmp.name
-
-        if hasattr(video, "save_to"):
-            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            tmp.close()
-            ok = False
-            try:
-                ok = video.save_to(tmp.name)
-            except Exception:
-                ok = False
-            if ok and os.path.exists(tmp.name):
-                return tmp.name
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-    except Exception:
-        return None
-    return None
-
-
-def upload_video_to_apimart_cdn(video: Any, api_key: Optional[str]) -> Optional[str]:
-    """上传视频到Apimart CDN"""
-    temp_video = _video_to_temp_file(video)
-    if not temp_video:
-        return None
-        
-    try:
-        headers = _headers(api_key)
-        ext = (os.path.splitext(temp_video)[1].lower().lstrip(".")) or "mp4"
-        token_res = requests.post(
-            "https://grsai.dakka.com.cn/client/resource/newUploadTokenZH",
-            headers=headers,
-            json={"sux": ext},
-            timeout=30,
-        )
-        if token_res.status_code != 200:
-            return None
-            
-        try:
-            token_data = token_res.json().get("data") or {}
-        except Exception:
-            return None
-            
-        token = token_data.get("token")
-        key = token_data.get("key")
-        up_url = token_data.get("url")
-        domain = token_data.get("domain")
-        if not (token and key and up_url and domain):
-            return None
-            
-        with open(temp_video, "rb") as f:
-            up_resp = requests.post(up_url, data={"token": token, "key": key}, files={"file": f}, timeout=300)
-        if up_resp.status_code not in (200, 201):
-            return None
-            
-        public_url = f"{domain}/{key}"
-        return public_url if public_url.startswith("http") else None
-    except Exception:
-        return None
-    finally:
-        try:
-            if temp_video and os.path.exists(temp_video):
-                os.unlink(temp_video)
-        except Exception:
-            pass
-
-def batch_upload_image_to_apimart_cdn(image: Any, api_key: Optional[str], max_side: int = 2048):
-    if image is None:
-        return None
-
-    if len(image.shape) == 4:
-        image_urls = []
-        for i in range(image.shape[0]):
-            img_tensor = image[i]
-            url = _upload_image_to_apimart_cdn(img_tensor, api_key, max_side)
-            if url:
-                image_urls.append(url)
-            else:
-                return None
-        
-        return image_urls
-    else:
-        url = _upload_image_to_apimart_cdn(image, api_key, max_side)
-        if url:
-            return [url]
-        else:
-            return None
 
 class VideoAdapter:
     """视频适配器类"""
@@ -445,159 +186,36 @@ class VideoAdapter:
             "bit_rate": 0,
         }
 
-class MediaProcessor:
-    """媒体处理器"""
-    
-    @staticmethod
-    def download_image(url: str, timeout: int = 300) -> Optional[torch.Tensor]:
 
-        if not url:
-            return None
-        
-        http = urllib3.PoolManager(timeout=timeout)
-        response = http.request('GET', url, preload_content=False)
-        filename = os.path.basename(url.split('?')[0])
-        try:
-            
-            temp_file = tempfile.NamedTemporaryFile(
-                mode='wb',
-                dir=folder_paths.temp_directory,
-                prefix='download_',
-                suffix=f"_{filename}",
-                delete=False
-            )
+def get_temp_video_path(prefix="temp", ext=".mp4"):
+    """在 ComfyUI 的 temp 目录下生成唯一视频路径"""
+    temp_dir = folder_paths.get_temp_directory()
+    os.makedirs(temp_dir, exist_ok=True)
+    filename = f"{prefix}_{uuid.uuid4().hex}{ext}"
+    return os.path.join(temp_dir, filename)
 
+def run_ffmpeg(cmd, desc="ffmpeg"):
+    """执行 ffmpeg 命令并检查错误"""
+    print(f"[{desc}] Running: {' '.join(cmd)}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"[{desc}] stderr:\n{proc.stderr}")
+        raise RuntimeError(f"ffmpeg error: {proc.stderr}")
+    print(f"[{desc}] Done.")
+    return proc.stdout
 
-            shutil.copyfileobj(response, temp_file)
-            # 使用PIL打开图像
-            image = Image.open(temp_file.name)
-            
-            image_tensor = pil2tensor(image)
-
-            temp_file.close()
-            
-            return image_tensor
-            
-        except Exception as e:
-            print(f"下载图像错误: {str(e)}")
-            return None
-        finally:
-            response.release_conn()
-            os.unlink(temp_file.name)
-    
-    @staticmethod
-    def download_video(url: str, task_id: str, timeout: int = 600) -> Tuple[Optional[str], Optional[str]]:
-        if not url:
-            return None
-        
-        http = urllib3.PoolManager(timeout=timeout)
-        response = http.request('GET', url, preload_content=False)
-        filename = os.path.basename(url.split('?')[0])
-        try:
-            
-            temp_file = tempfile.NamedTemporaryFile(
-                mode='wb',
-                dir=folder_paths.temp_directory,
-                prefix='download_',
-                suffix=f"_{filename}",
-                delete=False
-            )
-
-            base = folder_paths.get_output_directory()
-            output_name = f"{filename}"
-            output_path = os.path.join(base, output_name)
-
-            shutil.copyfileobj(response, temp_file)
-
-            shutil.copy(temp_file.name, output_path)
-
-            temp_file.close()
-            
-            return output_path, None
-            
-        except Exception as e:
-            error_msg = f"下载视频错误: {str(e)}"
-            print(error_msg)
-            return output_path, error_msg
-        finally:
-            response.release_conn()
-            os.unlink(temp_file.name)
-        # """下载视频到本地"""
-        # try:
-        #     output_dir = folder_paths.get_output_directory()
-        #     video_filename = f"grsai_video_{task_id}.mp4"
-        #     video_path = os.path.join(output_dir, video_filename)
-            
-        #     print(f"下载视频: {url}")
-            
-        #     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
-        #     response = requests.get(url, headers=headers, stream=True, timeout=timeout)
-        #     response.raise_for_status()
-            
-        #     # 保存视频
-        #     with open(video_path, 'wb') as f:
-        #         for chunk in response.iter_content(chunk_size=8192):
-        #             if chunk:
-        #                 f.write(chunk)
-            
-        #     print(f"视频下载成功: {video_path}")
-        #     return video_path, None
-            
-        # except Exception as e:
-        #     error_msg = f"下载视频错误: {str(e)}"
-        #     print(error_msg)
-        #     return None, error_msg
-    
-    @staticmethod
-    def detect_media_type(result_data: Dict[str, Any], media_type: str, auto_detect: bool) -> str:
-        """检测媒体类型"""
-        if not auto_detect and media_type != "auto":
-            return media_type
-        
-        # 自动检测逻辑
-        # 如果有pid字段，通常是视频（Sora）
-        if 'pid' in result_data and result_data['pid']:
-            return "video"
-        
-        # 如果有content字段，通常是图像（Nano Banana）
-        if 'content' in result_data and result_data['content']:
-            return "image"
-        
-        # 根据URL扩展名判断
-        url = result_data.get('url', '')
-        if url:
-            url_lower = url.lower()
-            if any(ext in url_lower for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']):
-                return "video"
-            elif any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
-                return "image"
-        
-        # 默认返回图像类型
-        return "image"
-    
-    @staticmethod
-    def load_image_from_path(image_path: str) -> Optional[torch.Tensor]:
-        """从路径加载图像"""
-        if not image_path or not os.path.exists(image_path):
-            print(f"图像路径不存在: {image_path}")
-            return None
-        
-        try:
-            image = Image.open(image_path)
-            
-            # 转换为RGB
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # 转换为numpy数组
-            image_np = np.array(image).astype(np.float32) / 255.0
-            
-            # 转换为torch张量
-            image_tensor = torch.from_numpy(image_np)[None,]
-            
-            print(f"图像加载成功: {image_path}")
-            return image_tensor
-            
-        except Exception as e:
-            print(f"加载图像错误: {str(e)}")
-            return None
+def save_tensor_images(image_tensor, directory, prefix="img"):
+    """
+    将 ComfyUI 的 IMAGE 张量 (B,H,W,C) 保存为 PNG 图片序列，返回文件路径列表。
+    image_tensor 值范围为 [0,1]。
+    """
+    os.makedirs(directory, exist_ok=True)
+    paths = []
+    for i, img in enumerate(image_tensor):
+        # 转为 0-255 uint8
+        np_img = (img.cpu().numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(np_img)
+        filepath = os.path.join(directory, f"{prefix}_{i:05d}.png")
+        pil_img.save(filepath)
+        paths.append(filepath)
+    return paths

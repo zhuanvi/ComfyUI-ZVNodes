@@ -15,10 +15,9 @@ node_list = [
     "layout_nodes",
     "filter_nodes",
     "ps_nodes",
-    "api_nodes",
-    "apimart_nodes",
-    "grsai_nodes",
-    "prompt_nodes"
+    "os_nodes",
+    "prompt_nodes",
+    "smp_nodes"
 ]
 
 NODE_CLASS_MAPPINGS = {}
