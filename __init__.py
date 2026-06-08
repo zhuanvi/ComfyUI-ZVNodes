@@ -17,7 +17,8 @@ node_list = [
     "ps_nodes",
     "os_nodes",
     "prompt_nodes",
-    "smp_nodes"
+    "smp_nodes",
+    "audio_nodes"
 ]
 
 NODE_CLASS_MAPPINGS = {}
