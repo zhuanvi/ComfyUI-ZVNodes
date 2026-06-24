@@ -8,13 +8,12 @@ import numpy as np
 from PIL import Image
 import json
 import folder_paths
+from .utils import generate_node_mappings
 
 class FFmpegVideoSplitterZV:
     """
     使用 ffmpeg 按时间或帧数拆分视频，输出片段路径列表。
     """
-    def __init__(self):
-        pass
 
     @classmethod
     def INPUT_TYPES(s):
@@ -63,7 +62,7 @@ class FFmpegVideoSplitterZV:
     RETURN_TYPES = ("STRING", "INT")
     RETURN_NAMES = ("split_video_paths", "count")
     FUNCTION = "split_video"
-    CATEGORY = "video/ffmpeg"
+    CATEGORY = "ZVNodes/ffmpeg"
     OUTPUT_NODE = False
 
     def split_video(self, video, split_mode, segment_time, segment_frames, accurate,
@@ -354,14 +353,10 @@ class VideoGeneratorFFmpegZV:
             except:
                 pass
 
-# 注册节点
-NODE_CLASS_MAPPINGS = {
-    "FFmpegVideoSplitterZV": FFmpegVideoSplitterZV,
-    "VideoGeneratorFFmpegZV": VideoGeneratorFFmpegZV
+
+NODE_CONFIG = {
+    "FFmpegVideoSplitterZV":{"class": FFmpegVideoSplitterZV, "name": "FFmpeg Video Splitter (Time/Frames)"},
+    "VideoGeneratorFFmpegZV": {"class": VideoGeneratorFFmpegZV, "name": "FFmpeg视频生成器ZV"}
 }
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "FFmpegVideoSplitterZV": "FFmpeg Video Splitter (Time/Frames)",
-    "VideoGeneratorFFmpegZV": "FFmpeg视频生成器ZV"
-}
-
+NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = generate_node_mappings(NODE_CONFIG)
