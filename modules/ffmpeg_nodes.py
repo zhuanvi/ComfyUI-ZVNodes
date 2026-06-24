@@ -365,10 +365,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VideoGeneratorFFmpegZV": "FFmpeg视频生成器ZV"
 }
 
-# 可选：将节点注册到 ComfyUI
-NODE_CLASS_MAPPINGS = {
-    
-}
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "FFmpegVideoSplitter": "FFmpeg Video Splitter (Time/Frames)"
-}
