@@ -1021,6 +1021,120 @@ class FFmpegVideoSplitterZV:
         # 8. 返回路径列表（换行分隔）和数量
         paths_str = "\n".join(segment_files)
         return (paths_str, len(segment_files))
+
+class FFmpegVideoMergerZV:
+    """
+    使用 ffmpeg 将多个视频按顺序合并为一个视频。
+    输入：多行字符串，每行一个视频路径
+    输出：合并后的视频路径
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "video_paths": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "每行输入一个视频文件的完整路径"
+                }),
+                "reencode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "启用重编码（确保不同格式视频兼容）；关闭则使用流复制（快速，但要求编码一致）"
+                }),
+                "output_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "输出目录（留空则使用第一个视频所在目录）"
+                }),
+                "output_filename": ("STRING", {
+                    "default": "merged.mp4",
+                    "tooltip": "输出文件名（含扩展名）"
+                }),
+                "ffmpeg_path": ("STRING", {
+                    "default": "ffmpeg",
+                    "tooltip": "ffmpeg 可执行文件路径或命令"
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("merged_video_path",)
+    FUNCTION = "merge_videos"
+    CATEGORY = "video/ffmpeg"
+    OUTPUT_NODE = False
+
+    def merge_videos(self, video_paths, reencode, output_path, output_filename, ffmpeg_path):
+        # 1. 解析输入路径，过滤空行
+        paths = [line.strip() for line in video_paths.splitlines() if line.strip()]
+        if not paths:
+            raise ValueError("至少需要一个视频文件路径")
+
+        # 2. 验证所有文件存在
+        for p in paths:
+            if not os.path.isfile(p):
+                raise FileNotFoundError(f"视频文件不存在: {p}")
+
+        # 3. 确定输出目录和文件
+        first_video_dir = os.path.dirname(os.path.abspath(paths[0]))
+        if output_path.strip() == "":
+            output_dir = first_video_dir
+        else:
+            output_dir = output_path.strip()
+        os.makedirs(output_dir, exist_ok=True)
+
+        output_file = os.path.join(output_dir, output_filename)
+
+        # 4. 生成 concat 文件列表（临时文件）
+        # 对每个路径进行安全转义：将单引号替换为 '\''，然后包裹单引号
+        def escape_path(p):
+            # 把路径中的单引号替换为 '\''
+            escaped = p.replace("'", "'\\''")
+            return f"file '{escaped}'"
+
+        concat_content = "\n".join(escape_path(p) for p in paths)
+
+        # 写入临时文件（放在输出目录，避免跨盘权限问题）
+        list_file = os.path.join(output_dir, "ffmpeg_concat_list.txt")
+        with open(list_file, "w", encoding="utf-8") as f:
+            f.write(concat_content)
+
+        # 5. 构建 ffmpeg 命令
+        cmd = [
+            ffmpeg_path,
+            "-f", "concat",
+            "-safe", "0",      # 允许使用绝对路径
+            "-i", list_file,
+        ]
+
+        if reencode:
+            # 重编码（可自定义编码器，这里用通用设置）
+            cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k"]
+        else:
+            # 流复制
+            cmd += ["-c", "copy"]
+
+        cmd += ["-y", output_file]  # 自动覆盖已有文件
+
+        # 6. 执行 ffmpeg
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            # 清理临时文件
+            if os.path.exists(list_file):
+                os.remove(list_file)
+            raise RuntimeError(f"ffmpeg 合并失败:\n{e.stderr}")
+        finally:
+            # 删除临时文件（无论成功失败，如果还存在）
+            if os.path.exists(list_file):
+                try:
+                    os.remove(list_file)
+                except Exception:
+                    pass
+
+        # 7. 返回输出路径
+        return (output_file,)
     
 NODE_CONFIG = {
     "VideoCounterNodeZV": {"class": VideoCounterNodeZV, "name": "Count Video (Directory)"},
@@ -1030,6 +1144,7 @@ NODE_CONFIG = {
     "LoadVideoFromDirZV":{"class": LoadVideoFromDirZV, "name": "Load One Video (Directory)"},
     "FFmpegImageSlideShowZV": {"class": FFmpegImageSlideShowZV, "name": "Image Slide Show (FFmpeg)"},
     "FFmpegVideoSplitterZV":{"class": FFmpegVideoSplitterZV, "name": "FFmpeg Video Splitter (Time/Frames)"},
+    "FFmpegVideoMergerZV": {"class": FFmpegVideoMergerZV, "name": "FFmpeg Video Merger (Concat)"},
 }
 
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = generate_node_mappings(NODE_CONFIG)
