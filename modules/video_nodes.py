@@ -947,8 +947,87 @@ class FFmpegVideoSplitterZV:
     CATEGORY = "ZVNodes/ffmpeg"
     OUTPUT_NODE = False
 
+    def _get_video_info(self, ffmpeg_path, video):
+        """获取视频时长(秒)和总帧数"""
+        import subprocess, json
+        cmd = [
+            ffmpeg_path, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=nb_frames,r_frame_rate,duration",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            video
+        ]
+        # 使用 ffprobe 获取信息
+        probe_cmd = [ffmpeg_path.replace("ffmpeg", "ffprobe")] + cmd[1:]
+        try:
+            result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            info = json.loads(result.stdout)
+            duration = None
+            # 从 format 获取时长
+            if "format" in info and "duration" in info["format"]:
+                duration = float(info["format"]["duration"])
+            # 从视频流获取帧率
+            fps = None
+            nb_frames = None
+            if "streams" in info and len(info["streams"]) > 0:
+                stream = info["streams"][0]
+                if "r_frame_rate" in stream:
+                    num, den = stream["r_frame_rate"].split("/")
+                    fps = float(num) / float(den)
+                if "nb_frames" in stream and stream["nb_frames"] != "N/A":
+                    nb_frames = int(stream["nb_frames"])
+                # 如果 nb_frames 没有，用 duration * fps 估算
+                if nb_frames is None and duration and fps:
+                    nb_frames = int(duration * fps)
+            return duration, fps, nb_frames
+        except Exception as e:
+            # 备用方案：用 ffmpeg 提取
+            cmd_fallback = [ffmpeg_path, "-i", video, "-f", "null", "-"]
+            result = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # 从 stderr 解析 Duration
+            import re
+            dur_match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", result.stderr)
+            if dur_match:
+                h, m, s = dur_match.groups()
+                duration = int(h) * 3600 + int(m) * 60 + float(s)
+                # 尝试解析 fps
+                fps_match = re.search(r"(\d+(?:\.\d+)?) fps", result.stderr)
+                fps = float(fps_match.group(1)) if fps_match else None
+                nb_frames = int(duration * fps) if fps else None
+                return duration, fps, nb_frames
+            raise RuntimeError(f"无法获取视频信息: {e}")
+
+    def _cut_segment(self, ffmpeg_path, video, ss, t, output_path, accurate):
+        """切割单个片段，返回是否成功"""
+        import subprocess
+        cmd = [ffmpeg_path, "-y", "-ss", str(ss), "-i", video]
+        if accurate:
+            cmd += ["-t", str(t), "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k", "-avoid_negative_ts", "make_zero"]
+        else:
+            # 快速模式：先 seek 到关键帧，再 copy
+            # -ss 放在 -i 前是 input seeking（快），放在 -i 后是 output seeking（准）
+            # 为了精确时间，这里用 output seeking + copy 会有问题（非关键帧开头）
+            # 所以 accurate=False 时，我们用 input seeking + copy，接受关键帧对齐的偏差
+            cmd = [ffmpeg_path, "-y", "-ss", str(ss), "-i", video, "-t", str(t),
+                   "-c", "copy", "-avoid_negative_ts", "make_zero", output_path]
+            try:
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+                return True
+            except subprocess.CalledProcessError:
+                return False
+        cmd.append(output_path)
+        try:
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
     def split_video(self, video, split_mode, segment_time, segment_frames, accurate,
                     output_dir, prefix, ffmpeg_path):
+        import os, glob, re, subprocess
+
         # 1. 校验输入文件
         if not os.path.isfile(video):
             raise FileNotFoundError(f"视频文件不存在: {video}")
@@ -965,57 +1044,90 @@ class FFmpegVideoSplitterZV:
             except Exception:
                 pass
 
-        # 4. 输出模板
-        output_template = os.path.join(output_dir, f"{prefix}_%03d.mp4")
+        # 4. 获取视频信息
+        duration, fps, total_frames = self._get_video_info(ffmpeg_path, video)
+        if duration is None or duration <= 0:
+            raise RuntimeError("无法获取视频时长")
 
-        # 5. 构建命令
-        cmd = [ffmpeg_path, "-i", video]
-
-        # 编码设置
-        if accurate:
-            cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "128k"]
-        else:
-            cmd += ["-c", "copy"]
-
-        # segment 复用器参数
-        cmd += ["-f", "segment"]
+        # 5. 计算切割点
+        segments = []
         if split_mode == "time":
-            cmd += ["-segment_time", str(segment_time)]
-            if accurate:
-                # 强制在 segment_time 的整数倍时间点生成关键帧
-                cmd += ["-force_key_frames", f"expr:gte(t,n_forced*{segment_time})"]
-            else:
-                # 非精确模式下尽量减小切割点偏移
-                cmd += ["-segment_time_delta", "0.01"]
+            num_segments = int(duration // segment_time)
+            remainder = duration % segment_time
+            for i in range(num_segments):
+                ss = i * segment_time
+                t = segment_time
+                segments.append((ss, t))
+            # 最后一段（如果有余数或只有一段）
+            if remainder > 0.1 or num_segments == 0:
+                ss = num_segments * segment_time
+                t = remainder if remainder > 0.1 else duration
+                segments.append((ss, t))
         else:  # frames
-            cmd += ["-segment_frames", str(segment_frames)]
+            if fps is None or total_frames is None:
+                raise RuntimeError("按帧分割需要获取视频帧率信息失败")
+            frame_duration = segment_frames / fps
+            num_segments = total_frames // segment_frames
+            remainder_frames = total_frames % segment_frames
+            for i in range(num_segments):
+                ss = i * frame_duration
+                t = frame_duration
+                segments.append((ss, t))
+            if remainder_frames > 0:
+                ss = num_segments * frame_duration
+                t = remainder_frames / fps
+                segments.append((ss, t))
+
+        # 6. 逐段切割
+        segment_files = []
+        for idx, (ss, t) in enumerate(segments):
+            output_path = os.path.join(output_dir, f"{prefix}_{idx:03d}.mp4")
+            
+            # 最后一段特殊处理：不限制时长，避免精度误差导致丢帧
+            is_last = (idx == len(segments) - 1)
+            if is_last and split_mode == "time":
+                # 对于最后一段，直接切到文件结尾，避免时间计算误差
+                cmd = [ffmpeg_path, "-y", "-ss", str(ss), "-i", video]
+            else:
+                cmd = [ffmpeg_path, "-y", "-ss", str(ss), "-i", video, "-t", str(t)]
+            
+            # 编码设置
             if accurate:
-                # 按帧数强制关键帧（每 segment_frames 帧插入一个关键帧）
-                cmd += ["-force_key_frames", f"expr:gte(n,n_forced*{segment_frames})"]
+                cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                        "-c:a", "aac", "-b:a", "128k"]
+            else:
+                cmd += ["-c", "copy"]
+            
+            cmd += ["-avoid_negative_ts", "make_zero", output_path]
 
-        cmd += ["-reset_timestamps", "1"]
-        cmd += [output_template]
+            print(f"[{idx+1}/{len(segments)}] Cutting: ss={ss:.3f}s, t={t:.3f}s -> {output_path}")
+            print(" ".join(cmd))
 
-        # 打印命令（调试用）
-        print("=" * 60)
-        print("FFmpeg command:")
-        print(" ".join(cmd))
-        print("=" * 60)
-
-        # 6. 执行
-        try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, check=True)
-        except subprocess.CalledProcessError as e:
-            print("FFmpeg stderr:\n", e.stderr)
-            raise RuntimeError(f"ffmpeg 执行失败，请查看控制台日志。")
-
-        # 7. 收集结果
-        segment_files = sorted(
-            glob.glob(os.path.join(output_dir, f"{prefix}_*.mp4")),
-            key=lambda x: int(re.search(rf"{prefix}_(\d+)\.mp4", os.path.basename(x)).group(1))
-        )
+            try:
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, check=True)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+                    segment_files.append(output_path)
+                else:
+                    print(f"警告: {output_path} 未生成或为空")
+            except subprocess.CalledProcessError as e:
+                print(f"切割片段 {idx} 失败: {e.stderr}")
+                # 如果是非精确模式的 copy 失败，尝试用精确模式重试
+                if not accurate:
+                    print("尝试用精确模式重试...")
+                    retry_cmd = [ffmpeg_path, "-y", "-ss", str(ss), "-i", video]
+                    if not is_last:
+                        retry_cmd += ["-t", str(t)]
+                    retry_cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                                  "-c:a", "aac", "-b:a", "128k",
+                                  "-avoid_negative_ts", "make_zero", output_path]
+                    try:
+                        subprocess.run(retry_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     text=True, check=True)
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+                            segment_files.append(output_path)
+                    except Exception as e2:
+                        print(f"重试也失败: {e2}")
 
         if not segment_files:
             raise RuntimeError("未生成任何视频片段，请检查 ffmpeg 输出。")
