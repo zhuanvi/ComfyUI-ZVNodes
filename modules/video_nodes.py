@@ -958,58 +958,60 @@ class FFmpegVideoSplitterZV:
             output_dir = os.path.join(os.path.dirname(video), "segments")
         os.makedirs(output_dir, exist_ok=True)
 
-        # 3. 清理旧的同名前缀文件，避免混淆
-        pattern = os.path.join(output_dir, f"{prefix}_*.mp4")
-        for old_file in glob.glob(pattern):
+        # 3. 清理旧的同名前缀文件
+        for old_file in glob.glob(os.path.join(output_dir, f"{prefix}_*.mp4")):
             try:
                 os.remove(old_file)
             except Exception:
                 pass
 
-        # 4. 构建输出文件名模板（ffmpeg segment 需要类似 "prefix_%03d.mp4"）
+        # 4. 输出模板
         output_template = os.path.join(output_dir, f"{prefix}_%03d.mp4")
 
-        # 5. 构建 ffmpeg 命令
+        # 5. 构建命令
         cmd = [ffmpeg_path, "-i", video]
 
-        # 如果是精确切割，需要重编码（可指定编码器，这里用 libx264 和 aac）
+        # 编码设置
         if accurate:
-            cmd += ["-c:v", "libx264", "-c:a", "aac", "-strict", "experimental"]
-            # 重编码模式下，可加入 -force_key_frames 来精确定义关键帧位置，
-            # 但 segment muxer 本身会对齐到关键帧，我们改为使用 -segment_time_delta 等。
-            # 简单起见，精确模式直接重编码，segment 仍按时间/帧切割。
+            cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "128k"]
         else:
-            cmd += ["-c", "copy"]  # 流复制，快速
+            cmd += ["-c", "copy"]
 
-        # 根据模式设置 segment 参数
+        # segment 复用器参数
+        cmd += ["-f", "segment"]
         if split_mode == "time":
-            cmd += ["-f", "segment", "-segment_time", str(segment_time)]
+            cmd += ["-segment_time", str(segment_time)]
+            if accurate:
+                # 强制在 segment_time 的整数倍时间点生成关键帧
+                cmd += ["-force_key_frames", f"expr:gte(t,n_forced*{segment_time})"]
+            else:
+                # 非精确模式下尽量减小切割点偏移
+                cmd += ["-segment_time_delta", "0.01"]
         else:  # frames
-            cmd += ["-f", "segment", "-segment_frames", str(segment_frames)]
+            cmd += ["-segment_frames", str(segment_frames)]
+            if accurate:
+                # 按帧数强制关键帧（每 segment_frames 帧插入一个关键帧）
+                cmd += ["-force_key_frames", f"expr:gte(n,n_forced*{segment_frames})"]
 
-        # 通用 segment 参数：重置时间戳使每个片段从0开始，避免黑屏
         cmd += ["-reset_timestamps", "1"]
-
-        # 如果精确模式，可以添加 -force_key_frames 使切割更精准（需编码支持）
-        if accurate and split_mode == "time":
-            # 在 segment_time 的整数倍位置强制关键帧
-            cmd += ["-force_key_frames",
-                    f"expr:gte(t,n_forced*{segment_time})"]
-        elif accurate and split_mode == "frames":
-            # 按帧强制关键帧，可通过 select 滤镜，这里简化
-            pass
-
-        # 输出模板
         cmd += [output_template]
 
-        # 6. 执行命令
+        # 打印命令（调试用）
+        print("=" * 60)
+        print("FFmpeg command:")
+        print(" ".join(cmd))
+        print("=" * 60)
+
+        # 6. 执行
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  text=True, check=True)
+                                text=True, check=True)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"ffmpeg 执行失败:\n{e.stderr}")
+            print("FFmpeg stderr:\n", e.stderr)
+            raise RuntimeError(f"ffmpeg 执行失败，请查看控制台日志。")
 
-        # 7. 收集生成的片段文件，按数字编号排序
+        # 7. 收集结果
         segment_files = sorted(
             glob.glob(os.path.join(output_dir, f"{prefix}_*.mp4")),
             key=lambda x: int(re.search(rf"{prefix}_(\d+)\.mp4", os.path.basename(x)).group(1))
@@ -1018,8 +1020,8 @@ class FFmpegVideoSplitterZV:
         if not segment_files:
             raise RuntimeError("未生成任何视频片段，请检查 ffmpeg 输出。")
 
-        # 8. 返回路径列表（换行分隔）和数量
         paths_str = "\n".join(segment_files)
+        print(f"成功切割为 {len(segment_files)} 个片段")
         return (paths_str, len(segment_files))
 
 class FFmpegVideoMergerZV:
@@ -1060,7 +1062,7 @@ class FFmpegVideoMergerZV:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("merged_video_path",)
     FUNCTION = "merge_videos"
-    CATEGORY = "video/ffmpeg"
+    CATEGORY = "ZVNodes/ffmpeg"
     OUTPUT_NODE = False
 
     def merge_videos(self, video_paths, reencode, output_path, output_filename, ffmpeg_path):
